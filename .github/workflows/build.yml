@@ -67,7 +67,7 @@ jobs:
           #   （查法：GET https://api.github.com/repos/openwrt/openwrt/branches/openwrt-25.12
           #           → commit.sha）
           #   换完必须重跑一次完整验证，因为补丁与阈值都是针对旧 commit 校过的。
-          OPENWRT_COMMIT: 9facdff6fb001b7a4e8cea395b89278fd49ca92f
+          OPENWRT_COMMIT: 937e6cbc2c7d9cf2bd08515dc26336d87a5d3ca3
         run: |
           set -e
           echo "目标 commit = $OPENWRT_COMMIT"
