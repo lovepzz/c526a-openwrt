@@ -29,7 +29,7 @@ env:
   #   dev-19.07       —— 老分支
   # 若你的补丁明确基于 24.10，请把这里改成对应分支名。
   REPO_URL: https://github.com/Lienol/openwrt.git
-  REPO_BRANCH: dev-master
+  REPO_BRANCH: 22.03
 
 jobs:
   build:
