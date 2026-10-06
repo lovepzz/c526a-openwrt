@@ -14,7 +14,7 @@
 #   - config-24.10-c526a
 # ============================================================================
 
-name: Build 极路由X (官方版本无线修复-OpenWrt 24.10 + LuCI + WiFi + LAN 10.0.0.5)
+name: Build 极路由X (OpenWrt 24.10 + LuCI + WiFi + LAN 10.0.0.5)
 
 on:
   workflow_dispatch:
@@ -55,6 +55,23 @@ jobs:
             gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev \
             python3-setuptools rsync swig unzip zlib1g-dev file wget ccache \
             libelf-dev python3-pyelftools
+
+      # ========== ccache 缓存 ==========
+      - name: Setup ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ github.ref }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ github.ref }}-
+            ccache-
+
+      - name: Configure ccache
+        run: |
+          ccache --set-config=max_size=5G
+          ccache --set-config=compression=true
+          ccache -z
+          ccache -s
 
       - name: Clone OpenWrt 24.10
         run: |
@@ -100,19 +117,23 @@ jobs:
           cd openwrt
           DTS=target/linux/ipq40xx/files-6.6/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts
 
-          # 用 echo 逐行追加，避免 heredoc 与 YAML 块缩进冲突。
-          {
-            echo ""
-            echo '&wifi0 {'
-            echo '	status = "okay";'
-            echo '	qcom,ath10k-calibration-variant = "C526A";'
-            echo '};'
-            echo ""
-            echo '&wifi1 {'
-            echo '	status = "okay";'
-            echo '	qcom,ath10k-calibration-variant = "C526A";'
-            echo '};'
-          } >> "$DTS"
+          # 只在尚未存在 &wifi0 节点时追加，避免重复
+          if ! grep -q '^&wifi0' "$DTS"; then
+            {
+              echo ""
+              echo '&wifi0 {'
+              echo '	status = "okay";'
+              echo '	qcom,ath10k-calibration-variant = "C526A";'
+              echo '};'
+              echo ""
+              echo '&wifi1 {'
+              echo '	status = "okay";'
+              echo '	qcom,ath10k-calibration-variant = "C526A";'
+              echo '};'
+            } >> "$DTS"
+          else
+            echo "DTS 中已存在 &wifi0，跳过追加"
+          fi
 
           echo "=== DTS 末尾 30 行 ==="
           tail -30 "$DTS"
@@ -122,6 +143,17 @@ jobs:
           cd openwrt
           ./scripts/feeds update -a
           ./scripts/feeds install -a
+
+      - name: Remove radicale3 broken dependency
+        run: |
+          cd openwrt
+          # 去掉 luci-app-radicale3 对不存在的 rpcd-mod-rad3-enc 的依赖
+          if [ -f feeds/luci/applications/luci-app-radicale3/Makefile ]; then
+            sed -i 's/ +rpcd-mod-rad3-enc//g' feeds/luci/applications/luci-app-radicale3/Makefile
+          fi
+          if [ -f package/feeds/luci/luci-app-radicale3/Makefile ]; then
+            sed -i 's/ +rpcd-mod-rad3-enc//g' package/feeds/luci/luci-app-radicale3/Makefile
+          fi
 
       - name: Set default LAN IP to 10.0.0.5
         run: |
@@ -170,11 +202,11 @@ jobs:
             fi
           done
 
-          if grep -qE '^CONFIG_PACKAGE_luci-i18n-base-zh' .config; then
+          if grep -qE '^CONFIG_PACKAGE_luci-i18n-base-zh_Hans=y' .config; then
             echo "  [OK]   中文语言包已选中："
-            grep -E '^CONFIG_PACKAGE_luci-i18n-.*-zh' .config | head -20
+            grep -E '^CONFIG_PACKAGE_luci-i18n-.*-zh_Hans=y' .config | head -20
           else
-            echo "  [WARN] 未检测到任何 luci-i18n-*-zh 语言包"
+            echo "  [WARN] 未检测到任何 luci-i18n-*-zh_Hans 语言包"
             echo "         请查看上面 'feeds 里实际存在的' 列表，确认包名"
             WARN=1
           fi
@@ -194,6 +226,11 @@ jobs:
           set -o pipefail
           cd openwrt
           make -j$(nproc) V=s 2>&1 | tee build.log
+
+      - name: ccache stats
+        if: always()
+        run: |
+          ccache -s || true
 
       - name: Show tail of build log
         if: always()
@@ -247,3 +284,12 @@ jobs:
           path: output/
           if-no-files-found: error
           retention-days: 30
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: openwrt/build.log
+          if-no-files-found: ignore
+          retention-days: 7
