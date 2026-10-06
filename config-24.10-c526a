@@ -1,11 +1,7 @@
 # ============================================================================
-# OpenWrt 24.10 — HiWiFi C526A (极路由X) 主路由 + 完整 LuCI 中文 + 无线
-#
-# 目标：
-#   - kernel 6.6 + ipqess，保留完整无线功能（2.4G + 5G）
-#   - 完整 LuCI 中文界面，常用插件齐全
-#   - 主路由模式：WAN 拨号 + LAN 桥接 + WiFi 作为接入点
-#   - 不含 PassWall，不含旁路由模式
+# OpenWrt 24.10 — HiWiFi C526A (极路由X)
+# 完整 LuCI 中文 + 无线 + 主路由模式 + LAN 10.0.0.5
+# 不含 PassWall / 旁路由
 # ============================================================================
 
 # ---------- Target ----------
@@ -13,52 +9,45 @@ CONFIG_TARGET_ipq40xx=y
 CONFIG_TARGET_ipq40xx_generic=y
 CONFIG_TARGET_ipq40xx_generic_DEVICE_hiwifi_c526a=y
 
-# ---------- 调试符号 ----------
+# ---------- 内核 ----------
 CONFIG_KERNEL_KALLSYMS=y
 CONFIG_KERNEL_DEBUG_INFO=n
 CONFIG_KERNEL_DEBUG_INFO_BTF=n
 
 # ============================================================================
-# 无线功能（核心）
+# 无线（QCA4019）
+# 校准数据由补丁中的 11-ath10k-caldata 从 ART 分区现场提取，
+# 不需要 ipq-wifi-hiwifi_c526a。
 # ============================================================================
-# C526A 使用 QCA4019 无线芯片，需要 ath10k 驱动 + 固件 + board 数据。
-# 注意：不要引用 ipq-wifi-hiwifi_c526a（官方 feed 无此 BDF），
-#       校准数据由 11-ath10k-caldata 从 ART 分区现场提取。
-CONFIG_PACKAGE_kmod-ath10k-ct=y
-CONFIG_PACKAGE_ath10k-firmware-qca4019-ct=y
-CONFIG_PACKAGE_ath10k-board-qca4019=y
+CONFIG_PACKAGE_kmod-ath10k=y
+CONFIG_PACKAGE_ath10k-firmware-qca4019=y
 CONFIG_PACKAGE_kmod-mac80211=y
 CONFIG_PACKAGE_kmod-cfg80211=y
 CONFIG_PACKAGE_wpad-basic-mbedtls=y
-CONFIG_PACKAGE_luci-app-wifi=y
 
 # ============================================================================
-# LuCI 核心 + 完整中文语言包
+# LuCI 核心 + 完整中文
 # ============================================================================
 CONFIG_PACKAGE_luci=y
 CONFIG_PACKAGE_luci-app-firewall=y
 CONFIG_PACKAGE_luci-app-opkg=y
 CONFIG_PACKAGE_luci-theme-bootstrap=y
 
-# --- 中文语言包（全量）---
 CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
 CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y
 CONFIG_PACKAGE_luci-i18n-opkg-zh-cn=y
-CONFIG_PACKAGE_luci-i18n-wifi-zh-cn=y
-CONFIG_PACKAGE_luci-i18n-network-zh-cn=y
-CONFIG_PACKAGE_luci-i18n-dhcp-zh-cn=y
 CONFIG_PACKAGE_luci-i18n-commands-zh-cn=y
-CONFIG_PACKAGE_luci-i18n-adblock-zh-cn=y
-CONFIG_PACKAGE_luci-i18n-upnp-zh-cn=y
 CONFIG_PACKAGE_luci-i18n-ddns-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-upnp-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-sqm-zh-cn=y
 CONFIG_PACKAGE_luci-i18n-statistics-zh-cn=y
 CONFIG_PACKAGE_luci-i18n-nlbwmon-zh-cn=y
-CONFIG_PACKAGE_luci-i18n-sqm-zh-cn=y
 CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y
 CONFIG_PACKAGE_luci-i18n-filetransfer-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-wol-zh-cn=y
 
 # ============================================================================
-# 主路由核心：PPPoE 拨号 + DHCP + DNS
+# 主路由核心：PPPoE + DHCP + DNS + IPv6
 # ============================================================================
 CONFIG_PACKAGE_ppp=y
 CONFIG_PACKAGE_ppp-mod-pppoe=y
@@ -69,7 +58,7 @@ CONFIG_PACKAGE_odhcp6c=y
 CONFIG_PACKAGE_luci-proto-ipv6=y
 
 # ============================================================================
-# 防火墙 + nftables（24.10 默认）
+# 防火墙（firewall4 + nftables）
 # ============================================================================
 CONFIG_PACKAGE_firewall4=y
 CONFIG_PACKAGE_nftables=y
@@ -82,7 +71,7 @@ CONFIG_PACKAGE_kmod-nf-nathelper=y
 CONFIG_PACKAGE_kmod-nf-nathelper-extra=y
 
 # ============================================================================
-# 常用 LuCI 应用（系统管理 + 网络工具 + 监控）
+# 常用 LuCI 应用
 # ============================================================================
 CONFIG_PACKAGE_luci-app-commands=y
 CONFIG_PACKAGE_luci-app-ttyd=y
@@ -94,9 +83,7 @@ CONFIG_PACKAGE_luci-app-statistics=y
 CONFIG_PACKAGE_luci-app-nlbwmon=y
 CONFIG_PACKAGE_luci-app-wol=y
 CONFIG_PACKAGE_luci-app-arpbind=y
-CONFIG_PACKAGE_luci-app-accesscontrol=y
 CONFIG_PACKAGE_luci-app-adblock-fast=y
-CONFIG_PACKAGE_luci-app-samba4=y
 
 # ============================================================================
 # 常用命令行工具
@@ -132,7 +119,7 @@ CONFIG_PACKAGE_uboot-envtools=y
 # ============================================================================
 CONFIG_VERSIONOPT=y
 CONFIG_VERSION_DIST="OpenWrt-C526A"
-CONFIG_VERSION_NUMBER="24.10-luci-full-wifi"
+CONFIG_VERSION_NUMBER="24.10-luci-wifi-lan10"
 CONFIG_VERSION_MANUFACTURER="HiWiFi"
 CONFIG_VERSION_PRODUCT="C526A"
 
