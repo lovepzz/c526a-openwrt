@@ -75,12 +75,12 @@ jobs:
           git config user.name "C526A Build"
 
           if git am --3way "$PATCH"; then
-            echo "✅ git am 成功"
+            echo "git am 成功"
           else
             echo "=== git am 失败，改用 git apply --3way ==="
             git am --abort 2>/dev/null || true
             git apply --3way -v "$PATCH" || { echo "!! 补丁无法应用"; exit 1; }
-            echo "✅ git apply 成功"
+            echo "git apply 成功"
           fi
 
           echo "=== 补丁落地自检 ==="
@@ -92,7 +92,7 @@ jobs:
             || { echo "!! 11-ath10k-caldata 里没有 c526a"; exit 1; }
           test -f target/linux/ipq40xx/files-6.6/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts \
             || { echo "!! DTS 未落地"; exit 1; }
-          echo "✅ 补丁落地自检通过"
+          echo "补丁落地自检通过"
 
       - name: Enable Wi-Fi in DTS
         run: |
@@ -101,19 +101,20 @@ jobs:
           DTS=target/linux/ipq40xx/files-6.6/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts
 
           # 补丁里 DTS 默认关闭 Wi-Fi，这里追加 &wifi0 / &wifi1 节点将其启用。
-          # 校准数据由 11-ath10k-caldata 从 ART 分区现场提取，无需 nvmem-cell。
-          cat >> "$DTS" << 'EOF'
+          # 用 echo 逐行追加，避免 heredoc 与 YAML 块缩进冲突。
+          {
+            echo ""
+            echo '&wifi0 {'
+            echo '	status = "okay";'
+            echo '	qcom,ath10k-calibration-variant = "C526A";'
+            echo '};'
+            echo ""
+            echo '&wifi1 {'
+            echo '	status = "okay";'
+            echo '	qcom,ath10k-calibration-variant = "C526A";'
+            echo '};'
+          } >> "$DTS"
 
-&wifi0 {
-	status = "okay";
-	qcom,ath10k-calibration-variant = "C526A";
-};
-
-&wifi1 {
-	status = "okay";
-	qcom,ath10k-calibration-variant = "C526A";
-};
-EOF
           echo "=== DTS 末尾 30 行 ==="
           tail -30 "$DTS"
 
@@ -128,17 +129,18 @@ EOF
           set -e
           cd openwrt
           mkdir -p files/etc/uci-defaults
-          cat > files/etc/uci-defaults/99-custom-lan-ip << 'EOF'
-          #!/bin/sh
-          uci set network.lan.ipaddr='10.0.0.5'
-          uci set network.lan.netmask='255.255.255.0'
-          uci -q delete dhcp.lan.dhcp_option || true
-          uci add_list dhcp.lan.dhcp_option='3,10.0.0.5'
-          uci add_list dhcp.lan.dhcp_option='6,10.0.0.5'
-          uci commit network
-          uci commit dhcp
-          exit 0
-          EOF
+          # 用 echo 逐行写入，避免 heredoc 与 YAML 块缩进冲突。
+          {
+            echo '#!/bin/sh'
+            echo "uci set network.lan.ipaddr='10.0.0.5'"
+            echo "uci set network.lan.netmask='255.255.255.0'"
+            echo "uci -q delete dhcp.lan.dhcp_option || true"
+            echo "uci add_list dhcp.lan.dhcp_option='3,10.0.0.5'"
+            echo "uci add_list dhcp.lan.dhcp_option='6,10.0.0.5'"
+            echo "uci commit network"
+            echo "uci commit dhcp"
+            echo "exit 0"
+          } > files/etc/uci-defaults/99-custom-lan-ip
           chmod +x files/etc/uci-defaults/99-custom-lan-ip
           echo "=== 自定义 uci-defaults ==="
           cat files/etc/uci-defaults/99-custom-lan-ip
@@ -167,7 +169,7 @@ EOF
             fi
           done
           [ "$FAIL" -eq 0 ] || { echo "!! 关键配置检查失败"; exit 1; }
-          echo "✅ config 加载完成"
+          echo "config 加载完成"
           wc -l .config
 
       - name: Download package sources
@@ -213,7 +215,7 @@ EOF
             && echo "  [OK] initramfs = $IR" \
             || { echo "  [MISS] 未产出 initramfs"; FAIL=1; }
           [ "$FAIL" -eq 0 ] || { echo "!! 产物断言失败"; tail -60 build.log; exit 1; }
-          echo "=== 产物断言通过 ==="
+          echo "产物断言通过"
 
       - name: Prepare artifacts
         if: always()
