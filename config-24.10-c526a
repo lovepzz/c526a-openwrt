@@ -1,7 +1,7 @@
 # ============================================================================
 # OpenWrt 24.10 — HiWiFi C526A (极路由X)
-# 完整 LuCI 中文 + 无线 + 主路由模式 + LAN 10.0.0.5
-# 不含 PassWall / 旁路由
+# 主路由模式 + 无线 + 完整 LuCI 中文 + LAN 10.0.0.5
+# 不含 PassWall / 旁路由 / Radicale
 # ============================================================================
 
 # ---------- Target ----------
@@ -15,29 +15,29 @@ CONFIG_KERNEL_DEBUG_INFO=n
 CONFIG_KERNEL_DEBUG_INFO_BTF=n
 
 # ============================================================================
-# 无线（QCA4019）
+# 无线（QCA4019，使用默认 ath10k-ct 即可）
 # ============================================================================
-
 CONFIG_PACKAGE_wpad-basic-mbedtls=y
 
 # ============================================================================
-# LuCI 核心 + 完整中文（24.10 用 zh_Hans，不是 zh-cn）
+# LuCI 核心 + 完整中文（24.10 使用 zh_Hans）
 # ============================================================================
 CONFIG_PACKAGE_luci=y
 CONFIG_PACKAGE_luci-app-firewall=y
-CONFIG_PACKAGE_luci-app-opkg=y
+CONFIG_PACKAGE_luci-app-package-manager=y
 CONFIG_PACKAGE_luci-theme-bootstrap=y
+
 CONFIG_PACKAGE_luci-i18n-base-zh_Hans=y
 CONFIG_PACKAGE_luci-i18n-firewall-zh_Hans=y
-CONFIG_PACKAGE_luci-i18n-opkg-zh_Hans=y
+CONFIG_PACKAGE_luci-i18n-package-manager-zh_Hans=y
 CONFIG_PACKAGE_luci-i18n-commands-zh_Hans=y
+CONFIG_PACKAGE_luci-i18n-ttyd-zh_Hans=y
+CONFIG_PACKAGE_luci-i18n-filemanager-zh_Hans=y
 CONFIG_PACKAGE_luci-i18n-ddns-zh_Hans=y
 CONFIG_PACKAGE_luci-i18n-upnp-zh_Hans=y
 CONFIG_PACKAGE_luci-i18n-sqm-zh_Hans=y
 CONFIG_PACKAGE_luci-i18n-statistics-zh_Hans=y
 CONFIG_PACKAGE_luci-i18n-nlbwmon-zh_Hans=y
-CONFIG_PACKAGE_luci-i18n-ttyd-zh_Hans=y
-CONFIG_PACKAGE_luci-i18n-filetransfer-zh_Hans=y
 CONFIG_PACKAGE_luci-i18n-wol-zh_Hans=y
 
 # ============================================================================
@@ -69,14 +69,13 @@ CONFIG_PACKAGE_kmod-nf-nathelper-extra=y
 # ============================================================================
 CONFIG_PACKAGE_luci-app-commands=y
 CONFIG_PACKAGE_luci-app-ttyd=y
-CONFIG_PACKAGE_luci-app-filetransfer=y
+CONFIG_PACKAGE_luci-app-filemanager=y
 CONFIG_PACKAGE_luci-app-ddns=y
 CONFIG_PACKAGE_luci-app-upnp=y
 CONFIG_PACKAGE_luci-app-sqm=y
 CONFIG_PACKAGE_luci-app-statistics=y
 CONFIG_PACKAGE_luci-app-nlbwmon=y
 CONFIG_PACKAGE_luci-app-wol=y
-CONFIG_PACKAGE_luci-app-arpbind=y
 
 # ============================================================================
 # 常用命令行工具
@@ -91,7 +90,6 @@ CONFIG_PACKAGE_nano=y
 CONFIG_PACKAGE_ca-bundle=y
 CONFIG_PACKAGE_resolveip=y
 CONFIG_PACKAGE_zoneinfo-asia=y
-CONFIG_PACKAGE_tzdata-asia=y
 CONFIG_PACKAGE_tcpdump=y
 CONFIG_PACKAGE_iperf3=y
 CONFIG_PACKAGE_bind-dig=y
