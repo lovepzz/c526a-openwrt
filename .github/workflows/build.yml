@@ -14,7 +14,7 @@
 #   - config-24.10-c526a
 # ============================================================================
 
-name: Build 极路由X (guanfang-OpenWrt 24.10 + LuCI + WiFi + LAN 10.0.0.5)
+name: Build 极路由X (官方版本无线修复-OpenWrt 24.10 + LuCI + WiFi + LAN 10.0.0.5)
 
 on:
   workflow_dispatch:
