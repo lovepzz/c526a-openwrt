@@ -1,36 +1,237 @@
-# This is a basic workflow to help you get started with Actions
+# ============================================================================
+# HiWiFi C526A (极路由X) — OpenWrt 24.10 + 完整 LuCI 中文 + 无线
+#
+# 特点：
+#  1) 源码：openwrt/openwrt 分支 openwrt-24.10（内核 6.6，ipqess + DSA）
+#  2) 应用仓库根目录的 C526A 补丁
+#  3) 补丁默认关闭 Wi-Fi，workflow 自动追加 &wifi0/&wifi1 节点将其启用
+#  4) 默认 LAN IP 改为 10.0.0.5（首次启动时通过 uci-defaults 自动应用）
+#  5) 不添加任何第三方 feed，全部使用官方 feed
+#  6) 不含 PassWall，不含旁路由模式
+#
+# 需要放在仓库根目录的文件：
+#   - 0001-Added-support-for-HIWIFI-c526a-24.10.patch
+#   - config-24.10-c526a
+# ============================================================================
 
-name: CI
+name: Build C526A (OpenWrt 24.10 + LuCI + WiFi + LAN 10.0.0.5)
 
-# Controls when the workflow will run
 on:
-  # Triggers the workflow on push or pull request events but only for the "main" branch
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
-
-  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+env:
+  REPO_URL: https://github.com/openwrt/openwrt.git
+  REPO_BRANCH: openwrt-24.10
+
 jobs:
-  # This workflow contains a single job called "build"
   build:
-    # The type of runner that the job will run on
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
 
-    # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      # Runs a single command using the runners shell
-      - name: Run a one-line script
-        run: echo Hello, world!
-
-      # Runs a set of commands using the runners shell
-      - name: Run a multi-line script
+      - name: Verify repo files
         run: |
-          echo Add other actions to build,
-          echo test, and deploy your project.
+          ls -la
+          test -f 0001-Added-support-for-HIWIFI-c526a-24.10.patch \
+            || { echo "!! 缺少 C526A 补丁"; exit 1; }
+          test -f config-24.10-c526a \
+            || { echo "!! 缺少 config-24.10-c526a"; exit 1; }
+          echo OK
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+          sudo apt-get clean
+          df -h /
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex bison g++ gawk \
+            gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev \
+            python3-setuptools rsync swig unzip zlib1g-dev file wget ccache \
+            libelf-dev python3-pyelftools
+
+      - name: Clone OpenWrt 24.10
+        run: |
+          set -e
+          git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" openwrt
+          cd openwrt
+          echo "=== 源码版本 ==="
+          git log --oneline -1
+          echo "=== 内核版本 ==="
+          grep -E '^LINUX_VERSION-' include/kernel-version.mk || true
+
+      - name: Apply C526A patch
+        run: |
+          set -e
+          cd openwrt
+          PATCH="$GITHUB_WORKSPACE/0001-Added-support-for-HIWIFI-c526a-24.10.patch"
+          git config user.email "build@c526a.local"
+          git config user.name "C526A Build"
+
+          if git am --3way "$PATCH"; then
+            echo "✅ git am 成功"
+          else
+            echo "=== git am 失败，改用 git apply --3way ==="
+            git am --abort 2>/dev/null || true
+            git apply --3way -v "$PATCH" || { echo "!! 补丁无法应用"; exit 1; }
+            echo "✅ git apply 成功"
+          fi
+
+          echo "=== 补丁落地自检 ==="
+          grep -q 'hiwifi_c526a' target/linux/ipq40xx/image/generic.mk \
+            || { echo "!! generic.mk 里没有 hiwifi_c526a"; exit 1; }
+          grep -q 'hiwifi,c526a' target/linux/ipq40xx/base-files/etc/board.d/02_network \
+            || { echo "!! 02_network 里没有 c526a"; exit 1; }
+          grep -q 'hiwifi,c526a' target/linux/ipq40xx/base-files/etc/hotplug.d/firmware/11-ath10k-caldata \
+            || { echo "!! 11-ath10k-caldata 里没有 c526a"; exit 1; }
+          test -f target/linux/ipq40xx/files-6.6/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts \
+            || { echo "!! DTS 未落地"; exit 1; }
+          echo "✅ 补丁落地自检通过"
+
+      - name: Enable Wi-Fi in DTS
+        run: |
+          set -e
+          cd openwrt
+          DTS=target/linux/ipq40xx/files-6.6/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts
+
+          # 补丁里 DTS 默认关闭 Wi-Fi，这里追加 &wifi0 / &wifi1 节点将其启用。
+          # 校准数据由 11-ath10k-caldata 从 ART 分区现场提取，无需 nvmem-cell。
+          cat >> "$DTS" << 'EOF'
+
+&wifi0 {
+	status = "okay";
+	qcom,ath10k-calibration-variant = "C526A";
+};
+
+&wifi1 {
+	status = "okay";
+	qcom,ath10k-calibration-variant = "C526A";
+};
+EOF
+          echo "=== DTS 末尾 30 行 ==="
+          tail -30 "$DTS"
+
+      - name: Update and install feeds
+        run: |
+          cd openwrt
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Set default LAN IP to 10.0.0.5
+        run: |
+          set -e
+          cd openwrt
+          mkdir -p files/etc/uci-defaults
+          cat > files/etc/uci-defaults/99-custom-lan-ip << 'EOF'
+          #!/bin/sh
+          # 首次启动时把 LAN 改为 10.0.0.5，并同步 DHCP 下发的网关/DNS
+          uci set network.lan.ipaddr='10.0.0.5'
+          uci set network.lan.netmask='255.255.255.0'
+          uci -q delete dhcp.lan.dhcp_option || true
+          uci add_list dhcp.lan.dhcp_option='3,10.0.0.5'
+          uci add_list dhcp.lan.dhcp_option='6,10.0.0.5'
+          uci commit network
+          uci commit dhcp
+          exit 0
+          EOF
+          chmod +x files/etc/uci-defaults/99-custom-lan-ip
+
+          echo "=== 自定义 uci-defaults ==="
+          cat files/etc/uci-defaults/99-custom-lan-ip
+
+      - name: Load config
+        run: |
+          set -e
+          cd openwrt
+          cp "$GITHUB_WORKSPACE/config-24.10-c526a" .config
+          echo "=== 第一轮 defconfig ==="
+          make defconfig
+          echo "=== 第二轮 defconfig（收敛）==="
+          make defconfig
+
+          echo "=== 关键配置正向断言 ==="
+          FAIL=0
+          for opt in \
+            CONFIG_TARGET_ipq40xx_generic_DEVICE_hiwifi_c526a \
+            CONFIG_PACKAGE_luci \
+            CONFIG_PACKAGE_luci-i18n-base-zh-cn ; do
+            if grep -qx "${opt}=y" .config; then
+              echo "  [OK]   ${opt}=y"
+            else
+              echo "  [MISS] ${opt}"
+              FAIL=1
+            fi
+          done
+          [ "$FAIL" -eq 0 ] || { echo "!! 关键配置检查失败"; exit 1; }
+          echo "✅ config 加载完成"
+          wc -l .config
+
+      - name: Download package sources
+        run: |
+          cd openwrt
+          make -j$(nproc) download
+
+      - name: Build
+        run: |
+          set -o pipefail
+          cd openwrt
+          make -j$(nproc) V=s 2>&1 | tee build.log
+
+      - name: Show tail of build log
+        if: always()
+        run: |
+          cd openwrt
+          tail -120 build.log || true
+          echo "=== 错误行 ==="
+          grep -n -i -E "error|failed to build" build.log | tail -60 || true
+
+      - name: Assert firmware produced
+        if: always()
+        run: |
+          cd openwrt
+          ls -la bin/targets/ipq40xx/generic/ 2>/dev/null || true
+          FAIL=0
+          grep -qx 'CONFIG_TARGET_ipq40xx_generic_DEVICE_hiwifi_c526a=y' .config \
+            || { echo "  [MISS] .config 里没有 C526A 设备项"; FAIL=1; }
+          SU=$(find bin/targets/ipq40xx/generic -maxdepth 1 -type f \
+                 -name '*hiwifi_c526a*sysupgrade.bin' -print -quit 2>/dev/null || true)
+          [ -n "$SU" ] && [ -s "$SU" ] \
+            && echo "  [OK] sysupgrade = $SU" \
+            || { echo "  [MISS] 未产出 sysupgrade.bin"; FAIL=1; }
+          FU=$(find bin/targets/ipq40xx/generic -maxdepth 1 -type f \
+                 -name '*hiwifi_c526a*squashfs-factory.ubi' -print -quit 2>/dev/null || true)
+          [ -n "$FU" ] && [ -s "$FU" ] \
+            && echo "  [OK] factory.ubi = $FU" \
+            || { echo "  [MISS] 未产出 factory.ubi"; FAIL=1; }
+          IR=$(find bin/targets/ipq40xx/generic -maxdepth 1 -type f \
+                 -name '*hiwifi_c526a*initramfs*' -print -quit 2>/dev/null || true)
+          [ -n "$IR" ] && [ -s "$IR" ] \
+            && echo "  [OK] initramfs = $IR" \
+            || { echo "  [MISS] 未产出 initramfs"; FAIL=1; }
+          [ "$FAIL" -eq 0 ] || { echo "!! 产物断言失败"; tail -60 build.log; exit 1; }
+          echo "=== 产物断言通过 ==="
+
+      - name: Prepare artifacts
+        if: always()
+        run: |
+          mkdir -p output
+          cd openwrt
+          find bin/targets/ipq40xx -type f \( -name "*.bin" -o -name "*.ubi" -o -name "*.itb" \
+            -o -name "*metadata*" -o -name "profiles.json" -o -name "*.buildinfo" \) \
+            -exec cp {} "$GITHUB_WORKSPACE/output/" \; 2>/dev/null || true
+          ls -la "$GITHUB_WORKSPACE/output/"
+
+      - name: Upload firmware
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: c526a-24.10-luci-wifi-lan10
+          path: output/
+          if-no-files-found: error
+          retention-days: 30
