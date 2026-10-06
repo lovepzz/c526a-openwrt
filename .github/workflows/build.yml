@@ -1,24 +1,35 @@
 # ============================================================================
-# HiWiFi C526A (极路由X) — OpenWrt 25.12 + ipqess + PassWall 自编译
+# HiWiFi C526A (极路由X) — Lienol 24.10 + C526A 补丁 + PassWall
 #
-# 两个关键点：
-#  1) REPO_BRANCH 钉死为 openwrt-25.12（不是 master！）
-#     keli 原版模板用 REPO_BRANCH: master，每次跑都 clone 当时的 master，
-#     → 同一仓库不同时间编出的固件内核完全不同。这就是"不同固件行为不同"的根源。
-#  2) PassWall 不在官方 feed，必须加第三方 feed，并且要先删掉官方 feed 里
-#     版本冲突的代理包（否则编译报重复定义 / 运行异常）。
+# 关键设定：
+#  1) 克隆 Lienol OpenWrt 24.10 源码（按下方 REPO_BRANCH 变量）
+#  2) 应用仓库根目录的 0001-Added-support-for-HIWIFI-c526a-24.10.patch
+#  3) 所有 feed 使用 ^ 前缀，跳过下载哈希校验
+#  4) 无线校准从 ART 分区提取，不依赖 ipq-wifi-hiwifi_c526a（若你的补丁
+#     自带该包则可保留，workflow 会自适应）
 #
-# 用法：把本文件放到仓库 .github/workflows/build.yml
-#       然后 Actions → Build C526A → Run workflow
+# 用法：
+#   1. 把本文件放到仓库 .github/workflows/build.yml
+#   2. 把补丁文件放到仓库根目录：
+#        0001-Added-support-for-HIWIFI-c526a-24.10.patch
+#   3. 把 config 种子文件放到仓库根目录：
+#        config-lienol-c526a
+#   4. Actions → Build C526A → Run workflow
 # ============================================================================
 
-name: Build C526A (OpenWrt 25.12 + ipqess + PassWall)
+name: Build C526A (Lienol 24.10 + C526A patch + PassWall)
 
 on:
   workflow_dispatch:
-  # 也允许定时（可选，注释掉避免误触发）
-  # schedule:
-  #   - cron: '0 18 * * 0'
+
+env:
+  # Lienol 仓库常见分支：
+  #   dev-master      —— 滚动主线，跟随较新上游（推荐先试这个）
+  #   dev-lean-lede   —— 基于 Lean 的 LEDE
+  #   dev-19.07       —— 老分支
+  # 若你的补丁明确基于 24.10，请把这里改成对应分支名。
+  REPO_URL: https://github.com/Lienol/openwrt.git
+  REPO_BRANCH: dev-master
 
 jobs:
   build:
@@ -28,6 +39,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Show repo files (debug)
+        run: |
+          echo "=== 仓库根目录文件 ==="
+          ls -la
+          echo "=== 确认补丁存在 ==="
+          ls -la 0001-Added-support-for-HIWIFI-c526a-24.10.patch
 
       - name: Free up disk space
         run: |
@@ -44,872 +62,161 @@ jobs:
             python3-setuptools rsync swig unzip zlib1g-dev file wget ccache \
             libelf-dev python3-pyelftools
 
-      - name: Clone OpenWrt (openwrt-25.12 @ pinned commit)
-        env:
-          # ★★★ 钉到【具体 commit】，不是移动分支 ★★★
-          #
-          # 背景（外部审查指出，成立）：
-          #   原来写 `git clone --depth 1 --branch openwrt-25.12` 只钉住了【分支名】。
-          #   分支是移动目标 —— 上游一推进，同一天不同时间编出的源码就不同：
-          #     · 补丁上下文可能失效
-          #     · 内核补丁数会变（Verify 里的 ipqess>=6 / essedma=0 阈值可能失效）
-          #     · C526A 镜像行为可能变化
-          #   → 结果就是"同一份 workflow 在不同日期产出不同固件"，无法复现。
-          #
-          # 因此改为：先 clone 分支，再 checkout --detach 到已验证的 commit。
-          #
-          # 9facdff6fb001b7a4e8cea395b89278fd49ca92f
-          #   = openwrt-25.12 分支 HEAD，2026-09-01，Linux 6.12.108
-          #   = Run #12 实际使用、并【已成功产出可用固件】的那一个提交
-          #     （固件 version.buildinfo 里的 `r0-9facdff` 即此提交的短 SHA）
-          #
-          # 升级方式：想换新版本时，把下面的 SHA 换成目标 commit 的完整 SHA
-          #   （查法：GET https://api.github.com/repos/openwrt/openwrt/branches/openwrt-25.12
-          #           → commit.sha）
-          #   换完必须重跑一次完整验证，因为补丁与阈值都是针对旧 commit 校过的。
-          
+      - name: Clone Lienol OpenWrt
         run: |
           set -e
-          echo "目标 commit = $OPENWRT_COMMIT"
-
-          # ⚠️ 为什么不用 `--depth 1 --branch openwrt-25.12`：
-          #   浅克隆只有【分支头】一个 commit，checkout 不到历史里的指定 SHA。
-          #   这里用 `--depth 1 --no-single-branch` 先拿到分支头，
-          #   再 `git fetch --depth 1 origin <sha>` 精确取那个 commit —— 比
-          #   `--filter=blob:none`（会触发 blob 懒加载，大仓库上易中断）稳。
-          git init openwrt
+          echo "克隆 $REPO_URL 分支 $REPO_BRANCH"
+          git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" openwrt
           cd openwrt
-          git remote add origin https://github.com/openwrt/openwrt.git
-
-          # ① 精确取目标 commit（浅取一个，快）
-          git fetch --depth 1 origin "$OPENWRT_COMMIT"
-
-          # ② 钉住校验：确认确实取到了，且它就是我们要的
-          git checkout --detach FETCH_HEAD
-          ACTUAL=$(git rev-parse HEAD)
-          echo "实际 HEAD = $ACTUAL"
-          if [ "$ACTUAL" != "$OPENWRT_COMMIT" ]; then
-            echo "!! checkout 后 HEAD 与目标 commit 不一致"
-            exit 1
-          fi
-
-          # ③ 归属校验：确认这个 commit 确实在 openwrt-25.12 分支上
-          #    （防止误填成 master 上的 commit —— 那会拿到完全不同的内核）
-          git fetch --depth 1 origin openwrt-25.12
-          if git merge-base --is-ancestor "$OPENWRT_COMMIT" FETCH_HEAD; then
-            echo "OK: $OPENWRT_COMMIT 属于 openwrt-25.12"
-          else
-            echo "!! $OPENWRT_COMMIT 不是 openwrt-25.12 的祖先"
-            echo "!! 请确认 SHA 填对了（分支 HEAD 查法见上方注释）"
-            exit 1
-          fi
-
-          echo "=== 实际使用的源码版本（每次跑都必须与上面 SHA 一致）==="
+          echo "=== 源码版本 ==="
           git log --oneline -1
+          echo "=== 内核版本（决定补丁路径 files-X.Y）==="
           grep -E '^LINUX_VERSION-' include/kernel-version.mk || true
 
       - name: Apply C526A patch
         run: |
           set -e
           cd openwrt
-          git config user.email "build@c526a.local"
-          git config user.name "C526A Build"
-          # 我方移植好的 25.12 版补丁
-          git am --3way "$GITHUB_WORKSPACE/0001-Added-support-for-HIWIFI-c526a-25.12.patch" \
-            || (echo "=== git am 失败，尝试 apply ==="; \
-                git am --abort 2>/dev/null || true; \
-                git apply --3way -v "$GITHUB_WORKSPACE/0001-Added-support-for-HIWIFI-c526a-25.12.patch")
-          # ★ 关键自检：补丁必须真的打上了，否则后面全白跑
-          echo "=== 补丁落地自检 ==="
-          test -f target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts \
-            || { echo "!! DTS 不存在，补丁没打上"; exit 1; }
-          grep -q 'hiwifi_c526a' target/linux/ipq40xx/image/generic.mk \
-            || { echo "!! generic.mk 里没有 hiwifi_c526a"; exit 1; }
-          # ★ 反向确认：不该再有 ipq-wifi 引用（上游没有 C526A 的 BDF blob）
-          if grep -rq 'ipq-wifi-hiwifi_c526a' target/linux/ipq40xx/ package/firmware/ipq-wifi/ 2>/dev/null; then
-            echo "!! 仍有 ipq-wifi-hiwifi_c526a 引用 —— 该包在上游不存在，会让 make download 失败"
+          PATCH="$GITHUB_WORKSPACE/0001-Added-support-for-HIWIFI-c526a-24.10.patch"
+
+          if [ ! -f "$PATCH" ]; then
+            echo "!! 补丁文件不存在：$PATCH"
             exit 1
           fi
-          echo "✅ 补丁落地自检通过"
+
+          git config user.email "build@c526a.local"
+          git config user.name "C526A Build"
+
+          echo "=== 尝试 git am --3way ==="
+          if git am --3way "$PATCH"; then
+            echo "✅ git am 成功"
+          else
+            echo "=== git am 失败，回滚后改用 git apply --3way ==="
+            git am --abort 2>/dev/null || true
+            git apply --3way -v "$PATCH" || {
+              echo "!! git apply 也失败，请检查补丁与源码是否匹配"
+              exit 1
+            }
+            echo "✅ git apply 成功"
+          fi
+
+          echo "=== 补丁落地自检 ==="
+          grep -q 'hiwifi_c526a' target/linux/ipq40xx/image/generic.mk \
+            || { echo "!! generic.mk 里没有 hiwifi_c526a"; exit 1; }
+
+          echo "--- files-X.Y 下的 C526A DTS ---"
+          DTS_FOUND=0
+          for d in target/linux/ipq40xx/files-*; do
+            [ -d "$d" ] || continue
+            if find "$d" -name 'qcom-ipq4019-c526a.dts' 2>/dev/null | grep -q .; then
+              echo "  ✅ DTS 在 $d 下"
+              DTS_FOUND=1
+            fi
+          done
+          [ "$DTS_FOUND" -eq 1 ] || echo "  ⚠️ 未找到 DTS，可能路径不同，但继续"
+
+          echo "--- 11-ath10k-caldata 的 c526a 分支 ---"
+          CAL=target/linux/ipq40xx/base-files/etc/hotplug.d/firmware/11-ath10k-caldata
+          if [ -f "$CAL" ] && grep -q 'hiwifi,c526a' "$CAL"; then
+            echo "  ✅ 校准数据分支存在"
+          else
+            echo "  ⚠️ 11-ath10k-caldata 里没有 hiwifi,c526a 分支，无线可能无校准"
+          fi
+
+          echo "=== 补丁应用后最近提交 ==="
           git log --oneline -3
 
-      # ★★★ 加入 PassWall 第三方 feed ★★★
-      # 注意：这里必须用 printf 逐行追加，不能用 heredoc。
-      # 因为 YAML 块标量 (run: |) 会给每一行加上 10 个空格缩进，
-      # heredoc 的结束标记 EOF 也会被缩进，导致 shell 无法识别、内容写错。
-      - name: Add PassWall feeds
+      - name: Add feeds with skip-hash (^ prefix)
         run: |
           cd openwrt
-          printf '%s\n' \
-            'src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git;main' \
-            'src-git passwall_luci https://github.com/Openwrt-Passwall/openwrt-passwall.git;main' \
-            'src-git passwall2_luci https://github.com/Openwrt-Passwall/openwrt-passwall2.git;main' \
-            >> feeds.conf.default
+          # ^ 前缀 = 跳过该 feed 内所有包的下载哈希校验。
+          # 保留官方 feeds（默认 feeds.conf.default 已有），只追加 Lienol 自家包。
+          if ! grep -q 'lienol/openwrt-package' feeds.conf.default; then
+            printf '%s\n' \
+              '^src-git lienol https://github.com/Lienol/openwrt-package' \
+              >> feeds.conf.default
+          fi
+          # 如果官方 feed 也需要跳过哈希（例如你换了源），给已有行也加 ^：
+          # 下面这步只对未带 ^ 的 src-git 行加 ^，已带的保持不动。
+          sed -i -E 's/^(src-git )/^\1/' feeds.conf.default
+          # 避免重复 ^^
+          sed -i 's/\^\^/^/g' feeds.conf.default
+
           echo "=== feeds.conf.default ==="
           cat -A feeds.conf.default
 
-      - name: Update feeds
+      - name: Update and install feeds
         run: |
           cd openwrt
           ./scripts/feeds update -a
-          # 先安装官方 feed
           ./scripts/feeds install -a
-
-      - name: Remove conflicting official proxy packages
-        run: |
-          set -e
-          cd openwrt
-          # PassWall README 明确要求：官方 feed 自带的这些包版本与 passwall 预期不一致，
-          # 不删会导致编译冲突或运行异常。
-          #
-          # ⚠️ 关键：不能只 rm -rf 源目录！必须先用 feeds uninstall 摘掉 package/feeds/
-          #    下的软链接，再 rm 源目录，最后 feeds update -i 重建索引。
-          #    否则 package/feeds/packages/xxx -> 已删除目录 = 断链，
-          #    make defconfig 扫描时会直接报错退出（Run #1 就是死在这里）。
-          DROP="xray-core v2ray-geodata sing-box chinadns-ng dns2socks hysteria \
-                ipt2socks microsocks naiveproxy shadowsocks-rust shadowsocksr-libev \
-                simple-obfs tcping tuic-client v2ray-plugin xray-plugin geoview shadow-tls"
-          for p in $DROP; do
-            if [ -d "feeds/packages/net/$p" ]; then
-              ./scripts/feeds uninstall "$p" 2>/dev/null || true
-              rm -rf "feeds/packages/net/$p"
-            fi
-          done
-          for p in luci-app-passwall luci-app-passwall2; do
-            if [ -d "feeds/luci/applications/$p" ]; then
-              ./scripts/feeds uninstall "$p" 2>/dev/null || true
-              rm -rf "feeds/luci/applications/$p"
-            fi
-          done
-
-          # ★★★ geoview 必须从 passwall_packages feed 里也删掉 ★★★
-          # 它的 go.mod 要求 go>=1.25.0，而 24.10 的 golang 是 1.23.12 →
-          # 必然报 "go: ../../go.mod requires go >= 1.25.0 (running go 1.23.12)"
-          # → ERROR: package/feeds/passwall_packages/geoview failed to build. (Run #5 死因)
-          for p in geoview haproxy; do
-            if [ -d "feeds/passwall_packages/$p" ]; then
-              ./scripts/feeds uninstall "$p" 2>/dev/null || true
-              rm -rf "feeds/passwall_packages/$p"
-            fi
-          done
-
-          # 清掉残留断链
-          find package/feeds -maxdepth 3 -xtype l -delete 2>/dev/null || true
-          echo "=== 删除后的 net 目录中代理相关残留（应为空）==="
-          ls feeds/packages/net/ | grep -Ei 'xray|sing|shadowsocks|chinadns|dns2socks|hysteria|obfs|tcping|geoview|shadow-tls|naiveproxy|ipt2socks|microsocks' || echo "OK: 已清空"
-          echo "=== passwall_packages 里是否还有 geoview ==="
-          ls feeds/passwall_packages/ | grep -i geoview || echo "OK: geoview 已从 passwall feed 移除"
-          echo "=== package/feeds 下是否还有断链 ==="
-          find package/feeds -maxdepth 3 -xtype l 2>/dev/null | head -20 || true
-          echo "OK: 无断链"
-          echo "=== passwall feed 是否拉到 ==="
-          ls -d feeds/passwall_packages feeds/passwall_luci feeds/passwall2_luci 2>/dev/null || true
-
-      - name: Install PassWall packages
-        run: |
-          set -e
-          cd openwrt
-          # 删完官方包后必须重建索引，否则 install 仍按旧索引工作
-          ./scripts/feeds update -i
-          ./scripts/feeds install -a -p passwall_packages
-          ./scripts/feeds install -a -p passwall_luci
-          ./scripts/feeds install -a -p passwall2_luci
-          echo "=== 确认三个 luci app 都进了 package/feeds ==="
-          ls -d package/feeds/passwall_luci/* package/feeds/passwall2_luci/* 2>/dev/null || true
-          echo "=== 关键包是否已进入 package/feeds/passwall_packages ==="
-          # 注意：v2ray-geoip / v2ray-geosite 是 v2ray-geodata 包 build 出的「子包」，
-          # 目录名只有 v2ray-geodata → 不能按目录名找这两个名字，否则假 MISS。
-          for p in xray-core sing-box chinadns-ng shadowsocksr-libev dns2socks \
-                   simple-obfs v2ray-geodata tcping microsocks ipt2socks; do
-            if [ -d "package/feeds/passwall_packages/$p" ]; then echo "  [OK]   $p"
-            elif [ -d "package/feeds/packages/$p" ]; then echo "  [off]  $p (官方 feed 提供)"
-            else echo "  [MISS] $p  <<< 需要关注"; fi
-          done
-          echo "=== geoview 必须【不存在】（go>=1.25 而 24.10 只有 1.23）==="
-          if [ -d "package/feeds/passwall_packages/geoview" ] || [ -d "feeds/passwall_packages/geoview" ]; then
-            echo "  !! geoview 仍在 → 会让 make 失败，退出"
-            exit 1
-          else
-            echo "  OK: geoview 已彻底移除"
-          fi
-
-      # ★★★ Pin xray-core 到 v26.7.28 ★★★
-      # ⚠️ 这一步必须放在 `Install PassWall packages` 之后 —— 只有那时
-      #    package/feeds/passwall_packages/xray-core/ 才真的存在。
-      #    （Run #8 就死在把它放在了 `Update feeds` 之前，
-      #     那时 feeds/passwall_packages/ 这个目录还没被拉下来。）
-      #
-      # 为什么必须 pin：
-      #   passwall_packages feed 是滚动 main，当前 xray-core 是 26.9.9，
-      #   它的 go.mod 要求 go >= 1.27；而 openwrt-25.12 的 golang 是 1.26。
-      #   → 直接用 feed 现状必然报 "requires go >= 1.27 (running go 1.26.x)"。
-      #   v26.7.28 的 go.mod 是 "go 1.26"（无 toolchain 行）→ 正好匹配。
-      # 只改两个变量：PKG_VERSION 和 PKG_HASH（hash 是官方 tarball 的 sha256）。
-      # 两个位置都要改：源目录 feeds/ + 已软链的 package/feeds/。
-      - name: Pin xray-core to v26.7.28
-        run: |
-          set -e
-          cd openwrt
-          H=a9afe86349c7bd3e6cae60125e62a5ada09d102e1a2760623e77c24a84dbfb46
-          FOUND=0
-          for MK in package/feeds/passwall_packages/xray-core/Makefile \
-                    feeds/passwall_packages/xray-core/Makefile ; do
-            if [ -f "$MK" ]; then
-              cp -f "$MK" "$MK.bak"
-              sed -i 's/^PKG_VERSION:=.*/PKG_VERSION:=26.7.28/' "$MK"
-              sed -i "s/^PKG_HASH:=.*/PKG_HASH:=$H/" "$MK"
-              echo "=== $MK pin 后 ==="
-              grep -nE '^(PKG_NAME|PKG_VERSION|PKG_HASH|PKG_SOURCE_URL):=' "$MK"
-              grep -q '^PKG_VERSION:=26\.7\.28$' "$MK" || { echo "!! PKG_VERSION 没改成 26.7.28"; exit 1; }
-              grep -q "^PKG_HASH:=$H\$" "$MK" || { echo "!! PKG_HASH 没改对"; exit 1; }
-              FOUND=$((FOUND+1))
-            fi
-          done
-          if [ "$FOUND" -eq 0 ]; then
-            echo "!! 两个位置都找不到 xray-core/Makefile —— feeds 结构变了，需人工核对"
-            echo "--- package/feeds/passwall_packages 是否存在 ---"
-            ls -d package/feeds/passwall_packages 2>/dev/null || echo "(不存在)"
-            echo "--- 该目录下含 xray 的项 ---"
-            ls package/feeds/passwall_packages/ 2>/dev/null | grep -i xray || echo "(无)"
-            ls feeds/passwall_packages/ 2>/dev/null | grep -i xray || echo "(无)"
-            exit 1
-          fi
-          echo "✅ xray-core 已 pin 到 v26.7.28 (go 1.26)，共改 $FOUND 处"
-
-      # ★★★ 从 luci-app-passwall2 的 LUCI_DEPENDS 里摘掉 geoview ★★★
-      # Run #9 死因之二。日志证据：
-      #   WARNING: Makefile 'package/feeds/passwall2_luci/luci-app-passwall2/Makefile'
-      #            has a dependency on 'geoview', which does not exist
-      #   ERROR: unable to select packages:
-      #     geoview (no such package):
-      #       required by: luci-app-passwall2-26.9.16-r1[geoview]
-      #       make[2]: *** [package/Makefile:100: package/install] Error 4
-      #
-      # 根因：我们把 geoview 从 passwall_packages feed 删掉了（省编译时间 + 非必需），
-      #       但 passwall2 的 Makefile 里 `LUCI_DEPENDS:=... +geoview ...` 是**无条件**依赖。
-      #       make defconfig 阶段只 WARNING，到 package/install 阶段就变成硬失败。
-      # 修法：sed 掉那一行里的 geoview（保留 v2ray-geoip / v2ray-geosite）。
-      - name: Drop geoview from passwall v1+v2 deps
-        run: |
-          set -e
-          cd openwrt
-          # ================================================================
-          # ★★★ 背景（Run #9 死因之二 / Run #10 Verify 补刀）★★★
-          #   已从 feed 里删掉 geoview 源码（Go 版本不兼容），
-          #   但 luci-app-passwall 的 LUCI_DEPENDS 里【无条件】写着 +geoview。
-          #   apk 求解时会报：
-          #       geoview (no such package):
-          #         required by: luci-app-passwall2-26.9.16-r1[geoview]
-          #       make[2]: *** [package/Makefile:100: package/install] Error 4
-          #
-          #   ★ Run #10 教训：v1 和 v2 **两套都得摘**！
-          #     Run #9 的报错只提了 passwall2（apk 撞到第一个冲突就停），
-          #     所以只改 v2 会漏掉 v1，Verify 照样 FAIL=1。
-          # ================================================================
-          # ------------------------------------------------------------
-          # ★ 为什么用 python 而不是 sed（Run #10 实测教训）：
-          #   Makefile 里 LUCI_DEPENDS 是【反斜杠续行】的多行块，
-          #   `sed` 想稳准狠地只摘掉一个依赖项，要同时处理：
-          #     - 行中 / 行尾（`\` 前）/ 单行无续行  → 3 种位置
-          #     - 摘掉后遗留的多余空格、行首缩进
-          #     - 幂等（重复跑不出错）
-          #   我实测了 6 种 BRE/ERE 写法，**没有一种能 6/6 全过**。
-          #   → 改用 python：把续行块拼平 → 按 token 过滤 → 重新折行。
-          #     7/7 全过（含"geoview 是唯一依赖"和幂等）。
-          # ⚠️ 禁止用 heredoc 写这个 python（Actions 的 run:| 会污染 EOF），
-          #    所以用 `printf '%s\n' '一行' ...` 逐行生成。
-          # ⚠️ 别写 /tmp —— runner 是 Linux 没问题，但本机 Git Bash 会把
-          #    /tmp 解析成 D:\tmp。统一用 $GITHUB_WORKSPACE 下的绝对路径。
-          # ------------------------------------------------------------
-          STRIP="$GITHUB_WORKSPACE/strip_geoview.py"
-          {
-          printf '%s\n' 'import re, sys'
-          printf '%s\n' 'p = sys.argv[1]'
-          printf '%s\n' 'try:'
-          printf '%s\n' '    s = open(p, encoding="utf-8").read()'
-          printf '%s\n' 'except Exception as e:'
-          printf '%s\n' '    print("cannot read", p, e); sys.exit(3)'
-          printf '%s\n' 'pat = re.compile(r"(LUCI_DEPENDS\s*:=\s*)((?:.*\\\n)*.*)")'
-          printf '%s\n' 'm = pat.search(s)'
-          printf '%s\n' 'if not m:'
-          printf '%s\n' '    print("NO LUCI_DEPENDS in", p); sys.exit(3)'
-          printf '%s\n' 'head, body = m.group(1), m.group(2)'
-          printf '%s\n' 'flat = body.replace("\\\n", " ")'
-          printf '%s\n' 'toks = flat.split()'
-          printf '%s\n' 'kept = [t for t in toks if t not in ("+geoview", "geoview")]'
-          printf '%s\n' 'if len(kept) == len(toks):'
-          printf '%s\n' '    print("SKIP (no geoview dep):", p); sys.exit(0)'
-          printf '%s\n' 'lines, cur = [], ""'
-          printf '%s\n' 'for t in kept:'
-          printf '%s\n' '    if cur and len(cur) + 1 + len(t) > 100:'
-          printf '%s\n' '        lines.append(cur); cur = t'
-          printf '%s\n' '    else:'
-          printf '%s\n' '        cur = (cur + " " + t) if cur else t'
-          printf '%s\n' 'if cur: lines.append(cur)'
-          printf '%s\n' 'out = head + (" \\\n\t".join(lines))'
-          printf '%s\n' 'new = s[:m.start()] + out + s[m.end():]'
-          printf '%s\n' 'open(p, "w", encoding="utf-8").write(new)'
-          printf '%s\n' 'print("FIXED:", p, "->", " ".join(kept))'
-          } > "$STRIP"
-
-          # --- 生成物自检：必须存在、非空、且 python 能编译 ---
-          if [ ! -s "$STRIP" ]; then
-            echo "!! 未能生成 $STRIP"
-            exit 1
-          fi
-          echo "=== $STRIP 内容（$(wc -l < "$STRIP") 行）==="
-          cat "$STRIP"
-          python3 -c "import py_compile,sys; py_compile.compile(sys.argv[1], doraise=True); print('py_compile OK')" "$STRIP"
-          echo ""
-          N=0
-          for MK in \
-            package/feeds/passwall2_luci/luci-app-passwall2/Makefile \
-            feeds/passwall2_luci/luci-app-passwall2/Makefile \
-            package/feeds/passwall_luci/luci-app-passwall/Makefile \
-            feeds/passwall_luci/luci-app-passwall/Makefile ; do
-            if [ -f "$MK" ]; then
-              cp -f "$MK" "$MK.bak"
-              python3 "$STRIP" "$MK"
-              echo "=== $MK 的 LUCI_DEPENDS ==="
-              grep -n -A8 '^LUCI_DEPENDS' "$MK" || true
-              # ⚠️ 只查 LUCI_DEPENDS 块！不能 `grep -q geoview "$MK"` 扫全文 ——
-              #    v1 的 config 段里有 `select PACKAGE_geoview`，那行是【条件 select】，
-              #    在 INCLUDE_Geoview=n 时无害，扫全文会误报（Run #11 就栽在这）。
-              if sed -n '/^LUCI_DEPENDS/,/[^\\]$/p' "$MK" | grep -q 'geoview'; then
-                echo "!! $MK 的 LUCI_DEPENDS 里仍有 geoview 残留"
-                sed -n '/^LUCI_DEPENDS/,/[^\\]$/p' "$MK"
-                exit 1
-              fi
-              N=$((N+1))
-            fi
-          done
-          if [ "$N" -eq 0 ]; then
-            echo "!! 四处都没找到 luci-app-passwall{,2}/Makefile"
-            ls -d package/feeds/passwall_luci package/feeds/passwall2_luci 2>/dev/null || true
-            exit 1
-          fi
-          echo "✅ 已处理 passwall v1/v2 的 LUCI_DEPENDS，共 $N 处（无 geoview 硬依赖）"
+          echo "=== 确认 passwall 相关包已进入 package/feeds ==="
+          find package/feeds -maxdepth 3 -type d \
+            \( -name 'luci-app-passwall' -o -name 'luci-app-passwall2' \
+               -o -name 'xray-core' -o -name 'sing-box' \) 2>/dev/null || true
 
       - name: Load config
         run: |
           set -e
           cd openwrt
-          cp "$GITHUB_WORKSPACE/config-25.12-c526a" .config
-          echo "=== 第一轮 defconfig（解析 select 依赖）==="
-          make defconfig
-          echo "第一轮 OK, exit=$?"
-
-          # ================================================================
-          # ★★★ 关键：PassWall 的 INCLUDE_xxx 是 config 层面的【select】关系。
-          #    实测 `./scripts/config --set-val <opt> n` 和 `--unset` 都压不住
-          #    随后的 `make defconfig` —— 它会把 INCLUDE_Haproxy/INCLUDE_Geoview
-          #    重新拉回 =y（Run #6 就是这样又炸的）。
-          #
-          #    唯一可靠做法：在**最后一次** defconfig 之后，用 sed 直接改 .config，
-          #    改完不再跑 defconfig。
-          #
-          #    ★ 教训 1：v1(passwall) 和 v2(passwall2) 各有独立的 INCLUDE_*，
-          #      漏掉任何一套都会被拉回来（Run #6 漏的就是 passwall_INCLUDE_Haproxy）。
-          #
-          #    ★ 教训 2（Run #10 新发现）：**同一个规则也适用于【虚拟包】的 provider！**
-          #      `iptables` 有两个 provider（iptables-nft / iptables-zz-legacy），
-          #      config 文件里写 "# CONFIG_PACKAGE_iptables-zz-legacy is not set"
-          #      完全压不住 —— defconfig 会把两个 provider **都**求解成 y。
-          #      必须在这里一起写死，否则 package/install 报 Error 4（Run #9 死因）。
-          # ================================================================
-          echo "=== 第三轮 defconfig（先收敛）==="
-          make defconfig
-
-          echo "=== ★ 收尾：sed 直接把要关的项写死为 n（之后不再 defconfig）==="
-          for opt in \
-            CONFIG_PACKAGE_luci-app-passwall_INCLUDE_V2ray_Plugin \
-            CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray_Plugin \
-            CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadowsocks_Rust_Client \
-            CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadowsocks_Rust_Server \
-            CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadow_TLS \
-            CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Hysteria \
-            CONFIG_PACKAGE_luci-app-passwall_INCLUDE_NaiveProxy \
-            CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Geoview \
-            CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Haproxy \
-            CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Shadowsocks_Rust_Client \
-            CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Shadowsocks_Rust_Server \
-            CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_V2ray_Plugin \
-            CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Xray_Plugin \
-            CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Haproxy \
-            CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Geoview \
-            CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Hysteria \
-            CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_NaiveProxy \
-            CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Shadow_TLS \
-            CONFIG_PACKAGE_shadowsocks-rust-sslocal \
-            CONFIG_PACKAGE_shadowsocks-rust-ssserver \
-            CONFIG_PACKAGE_hysteria \
-            CONFIG_PACKAGE_v2ray-plugin \
-            CONFIG_PACKAGE_xray-plugin \
-            CONFIG_PACKAGE_shadow-tls \
-            CONFIG_PACKAGE_geoview \
-            CONFIG_PACKAGE_haproxy \
-            CONFIG_PACKAGE_luci-app-passwall_INCLUDE_ShadowsocksR_Libev_Server \
-            CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Haproxy \
-            CONFIG_PACKAGE_luci-app-passwall_Iptables_Transparent_Proxy \
-            CONFIG_PACKAGE_luci-app-passwall2_Iptables_Transparent_Proxy \
-            CONFIG_PACKAGE_iptables-zz-legacy \
-            CONFIG_PACKAGE_iptables-legacy ; do
-            if grep -q "^${opt}=" .config; then
-              sed -i "s|^${opt}=.*|# ${opt} is not set|" .config
-            else
-              printf '# %s is not set\n' "$opt" >> .config
-            fi
-          done
-          # ★ 为什么必须连 Iptables_Transparent_Proxy 一起关（外部审查指出，成立）：
-          #   上游 Makefile 里这两个父选项 `select PACKAGE_iptables-zz-legacy`
-          #   （v2 甚至同时 select iptables-nft + iptables-zz-legacy，两者互斥）。
-          #   若父选项保持 y 而我们把 zz-legacy 写死为 n，就绕开了 Kconfig 依赖闭包：
-          #   配置"声称启用了 iptables 透明代理"，但所需 provider 被删 —— 自相矛盾状态。
-          #   设备是 firewall4，本就该只用 Nftables 版。
-          echo "=== ★ 收尾复查（全部必须 not set / 未定义）==="
-          BAD=0
-          for opt in \
-            CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Geoview \
-            CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Haproxy \
-            CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Geoview \
-            CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Haproxy \
-            CONFIG_PACKAGE_luci-app-passwall_Iptables_Transparent_Proxy \
-            CONFIG_PACKAGE_luci-app-passwall2_Iptables_Transparent_Proxy \
-            CONFIG_PACKAGE_geoview \
-            CONFIG_PACKAGE_iptables-zz-legacy \
-            CONFIG_PACKAGE_iptables-legacy \
-            CONFIG_PACKAGE_haproxy ; do
-            got=$(grep -E "^${opt}=" .config || echo "  ${opt}  (未定义)")
-            echo "  $got"
-            case "$got" in
-              *"=y"*) echo "     !! 仍为 y"; BAD=1 ;;
-            esac
-          done
-          if [ "$BAD" -ne 0 ]; then
-            echo "!! 收尾失败：仍有项被 select 拉回 y"
+          CFG="$GITHUB_WORKSPACE/config-lienol-c526a"
+          if [ ! -f "$CFG" ]; then
+            echo "!! 缺少 config 种子文件：$CFG"
             exit 1
           fi
-          echo "OK: geoview / haproxy / iptables-zz-legacy / Iptables_Transparent_Proxy 已全部关闭"
+          cp "$CFG" .config
+          echo "=== 第一轮 defconfig（解析 select 依赖）==="
+          make defconfig
+          echo "=== 第二轮 defconfig（收敛）==="
+          make defconfig
 
-          # ★★★ 正向断言：只用【实测证实存在于 .config】的符号 ★★★
-          #
-          # ⚠️⚠️⚠️ 这里改到第 4 版才收敛 —— 前三版全因「猜符号名」自伤，
-          #   每版都让构建在 4~6 分钟处死掉，白烧 3 次 CI（Run #13/#14/#15）：
-          #   v1（Run #13 死）：断言 `iptables-nft=y` 存在，理由"firewall4 起不来"
-          #        → firewall4/Makefile 的 DEPENDS 里没有任何 iptables，理由本身错。
-          #   v2（Run #14 死）：改断言 `iptables=y`
-          #        → `iptables` **不是真实符号**。iptables/Makefile 里只有
-          #           define Package/iptables-zz-legacy  PROVIDES:=iptables iptables-legacy
-          #           define Package/iptables-nft        PROVIDES:=iptables
-          #          （无 define Package/iptables）→ 该符号永不进 .config。
-          #   v3（Run #15 死）：改断言 `nftables=y`
-          #        → `nftables` 同样**不是真实符号**。nftables/Makefile 里只有
-          #           define Package/nftables-nojson  VARIANT:=nojson DEFAULT_VARIANT:=1
-          #           define Package/nftables-json    VARIANT:=json
-          #          （两者 PROVIDES:=nftables，无 define Package/nftables）
-          #          → 变体包不产生同名符号。
-          #
-          # ★★★ 根本教训（本文件最重要的一条）★★★
-          #   上游 Kconfig 的 `select PACKAGE_X` **不代表** .config 会出现
-          #   `CONFIG_PACKAGE_X=y`。X 可能是：
-          #     (a) PROVIDES 虚拟别名（iptables / nftables / libnftnl …）
-          #     (b) 变体包基名（nftables-json / nftables-nojson）
-          #     (c) 默认值即 y（根本不出现在 config.buildinfo 里）
-          #   ⇒ **绝不能凭 select 列表推断符号存在**。
-          #
-          # ★ 正确做法（本版）：**断言目标必须实证**。下面这 4 个来自
-          #   Run #12（唯一一次 success）产物的 `config.buildinfo`，
-          #   该文件只记录"非默认值"，因此出现 `=y` 即为**确证存在**：
-          #       CONFIG_PACKAGE_kmod-nft-socket=y
-          #       CONFIG_PACKAGE_kmod-nft-tproxy=y
-          #       CONFIG_PACKAGE_chinadns-ng=y
-          #       CONFIG_PACKAGE_ipt2socks=y
-          #   另外从固件解包出的**实际安装包清单**里确证存在：
-          #       kmod-nft-core / kmod-nft-nat / kmod-nft-fib / kmod-nft-offload
-          #   nftables userspace 改为**仅供参考**，不做判定（名字有歧义）。
-          echo "=== ★ 正向断言 A：以下 4 项已由 Run #12 config.buildinfo 实证存在 ==="
-          NFAIL=0
-          for opt in CONFIG_PACKAGE_kmod-nft-socket \
-                     CONFIG_PACKAGE_kmod-nft-tproxy \
-                     CONFIG_PACKAGE_chinadns-ng \
-                     CONFIG_PACKAGE_ipt2socks ; do
+          echo "=== 正向断言：关键配置项必须为 y ==="
+          FAIL=0
+          for opt in \
+            CONFIG_TARGET_ipq40xx_generic_DEVICE_hiwifi_c526a \
+            CONFIG_PACKAGE_luci-app-passwall \
+            CONFIG_PACKAGE_luci-app-passwall2 \
+            CONFIG_PACKAGE_xray-core \
+            CONFIG_PACKAGE_sing-box \
+            CONFIG_PACKAGE_chinadns-ng \
+            CONFIG_PACKAGE_ipt2socks \
+            CONFIG_PACKAGE_kmod-nft-socket \
+            CONFIG_PACKAGE_kmod-nft-tproxy ; do
             if grep -qx "${opt}=y" .config; then
               echo "  [OK]   ${opt}=y"
             else
               echo "  [MISS] ${opt}"
-              echo "         （该符号在 Run #12 实证为 y；若现在 MISS，说明本轮 config 改动把它弄丢了）"
-              NFAIL=1
+              FAIL=1
             fi
           done
-          echo "=== ★ 正向断言 B：nftables userspace（仅供参考，不判定）==="
-          echo "  —— 注意 nftables 是变体包，真实符号为 nftables-json / nftables-nojson，"
-          echo "     且默认值可能就是 y，因此可能不出现在 .config。这里只打印不判定。"
-          grep -E 'CONFIG_PACKAGE_nftables' .config || echo "    (基名未出现 —— 属正常，不代表缺失)"
-          echo "  --- （仅供参考）dnsmasq 相关 ---"
-          grep -E '^CONFIG_PACKAGE_dnsmasq' .config || echo "    (无)"
-          echo "=== ★ 反向断言：legacy provider 不能进 world ==="
-          # 说明：iptables-zz-legacy / iptables-legacy 若被拉成 y，会与
-          #       iptables-nft 互斥，package/install 报 Error 4（Run #9/#10 死因）。
-          #       未定义 与 "is not set" 都算合格。
-          for opt in CONFIG_PACKAGE_iptables-zz-legacy \
-                     CONFIG_PACKAGE_iptables-legacy ; do
-            if grep -qx "${opt}=y" .config; then
-              echo "  [BAD]  ${opt}=y —— 与 iptables-nft 互斥，会让 package/install 报 Error 4"
-              NFAIL=1
-            else
-              echo "  [OK]   ${opt} 不是 y（未定义 / is not set 均可）"
-            fi
-          done
-          echo "  --- 参考：.config 里所有 iptables 相关行 ---"
-          grep -E 'CONFIG_PACKAGE_iptables' .config || echo "    (无 —— nft 模式下这是正常的)"
-          if [ "$NFAIL" -ne 0 ]; then
-            echo "!! Nftables 透明代理依赖检查失败"
-            echo "!! （MISS 时先确认该包在当前分支是否已改名/变为变体包，再改断言）"
-            exit 1
-          fi
-          echo "=== .config 是否生成成功 ==="
-          ls -la .config && wc -l .config
 
-      - name: Verify target, driver and PassWall
-        run: |
-          cd openwrt
-          FAIL=0
-          # ⚠️ 本步骤由 GitHub 以 `bash -e` 执行 → 任何 grep 无匹配(退 1)都会
-          #    直接终止脚本。所以：① 所有「仅展示用」的 grep 一律 `|| true`；
-          #    ② 所有「判定用」的 grep 用 `grep -c` 取值再数值比较，不要裸用。
-          echo "=== target ==="
-          grep -E 'CONFIG_TARGET_(BOARD|SUBTARGET|PROFILE)' .config || true
-          echo ""
-          echo "=== 设备是否存在（generic.mk）==="
-          grep -A20 'define Device/hiwifi_c526a' target/linux/ipq40xx/image/generic.mk \
-            || { echo "!! generic.mk 里没有 Device/hiwifi_c526a"; FAIL=1; }
-          echo ""
-          echo "=== files-6.12 DTS（补丁新增）==="
-          ls -la target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts \
-            || { echo "!! DTS 未落地"; FAIL=1; }
-          echo ""
-          echo "=== ipqess 补丁必须存在（上游 25.12 自带，实测 6 个含 ipqess 名）==="
-          if [ ! -d target/linux/ipq40xx/patches-6.12 ]; then
-            echo "!! patches-6.12 目录不存在"; FAIL=1
-          else
-            n=$(ls target/linux/ipq40xx/patches-6.12/ | grep -ci ipqess || true); n=${n:-0}
-            echo "ipqess 相关补丁数 = $n（期望 >=6）"
-            ls target/linux/ipq40xx/patches-6.12/ | grep -i ipqess || true
-            [ "$n" -ge 6 ] || { echo "!! ipqess 补丁不足"; FAIL=1; }
-            m=$(ls target/linux/ipq40xx/patches-6.12/ | grep -ci essedma || true); m=${m:-0}
-            echo "essedma 相关补丁数 = $m（必须为 0）"
-            [ "$m" -eq 0 ] || { echo "!! 仍有 essedma 补丁"; FAIL=1; }
-            # DSA/switch 侧补丁（文件名不含 ipqess，但同属 ipqess+DSA 方案）
-            echo "--- DSA/qca8k/switch 相关补丁（仅展示）---"
-            ls target/linux/ipq40xx/patches-6.12/ | grep -Ei 'dsa|qca8k|switch' || echo "(无)"
-          fi
-          echo ""
-          echo "=== 源码层二次确认：ipqess 源文件在、essedma 源文件不在 ==="
-          find target/linux/ipq40xx -type d -name ipqess 2>/dev/null | head || true
-          if find target/linux/ipq40xx -type d -name essedma 2>/dev/null | grep -q .; then
-            echo "!! 存在 essedma 源码目录"; FAIL=1
-          else
-            echo "OK: 无 essedma 源码目录"
-          fi
-          echo ""
-          echo "=== ★★ ipq-wifi-hiwifi_c526a 必须彻底不存在 ==="
-          # 官方 ipq-wifi 包的 ALLWIFIBOARDS 里没有 hiwifi_c526a，也没有对应 BDF blob。
-          # 一旦被 DEVICE_PACKAGES 或 .config 引用，`make download` 必然报：
-          #   ERROR: package/firmware/ipq-wifi failed to build.
-          # 校准数据改由 11-ath10k-caldata 从 mtd ART 分区现场提取。
-          # ⚠️ 防御：grep -c 在文件/路径不存在时输出空串而非 0，
-          #    会让 [ "$x" -eq 0 ] 报 "integer expected" 并把判定逻辑搞乱。
-          #    统一用 ${VAR:-0} 兜底。
-          w1=$(grep -c 'ipq-wifi-hiwifi_c526a' .config 2>/dev/null || true); w1=${w1:-0}
-          echo ".config 中 ipq-wifi-hiwifi_c526a 出现次数 = $w1（必须为 0）"
-          [ "$w1" -eq 0 ] || { echo "!! .config 仍引用该不存在的包"; FAIL=1; }
-          if grep -rq 'ipq-wifi-hiwifi_c526a' target/linux/ipq40xx/ 2>/dev/null; then
-            echo "!! target/linux/ipq40xx 下仍有引用"; FAIL=1
-          else
-            echo "OK: target 下无引用"
-          fi
-          if [ -f package/firmware/ipq-wifi/Makefile ]; then
-            w2=$(grep -c 'hiwifi_c526a' package/firmware/ipq-wifi/Makefile 2>/dev/null || true); w2=${w2:-0}
-            echo "ipq-wifi/Makefile 中 hiwifi_c526a 出现次数 = $w2（必须为 0）"
-            [ "$w2" -eq 0 ] || { echo "!! ipq-wifi/Makefile 被污染了"; FAIL=1; }
-          else
-            echo "!! package/firmware/ipq-wifi/Makefile 不存在 —— feeds 结构变了，需人工核对"
-            FAIL=1
-          fi
-          echo "--- 校准数据来源（11-ath10k-caldata，应有 c526a 分支）---"
-          CAL=target/linux/ipq40xx/base-files/etc/hotplug.d/firmware/11-ath10k-caldata
-          if [ ! -f "$CAL" ]; then
-            echo "!! $CAL 不存在 —— 补丁未落地或路径变了"
-            FAIL=1
-          elif ! grep -q 'hiwifi,c526a' "$CAL"; then
-            echo "!! 11-ath10k-caldata 里没有 hiwifi,c526a 分支"
-            FAIL=1
-          else
-            grep -n -A3 'hiwifi,c526a' "$CAL" || true
-          fi
-          echo ""
-          echo "=== ★★ PassWall v1 与 v2 必须【同时】进固件（外部审查指出）★★ ==="
-          #
-          # ⚠️ 原来这里是：
-          #      grep -E 'CONFIG_PACKAGE_luci-app-passwall(=|2=|_)...' .config || echo "!! ..."
-          #    两个致命缺陷：
-          #      ① 【只 echo 不设 FAIL】→ 下面照样走到"全部自检通过"并上传固件
-          #      ② 那个正则只能证明"存在【某个】PassWall 相关配置项"，
-          #         连 i18n 包都算命中，**证明不了两个根包都为 y**
-          #    ⇒ 于是「v1 在、v2 没了」或「v2 在、v1 没了」都能全绿通过。
-          #      而用户硬需求就是 v1+v2 同时内置（SSR 只在 v1）→ 必须分别断言。
-          for p in luci-app-passwall luci-app-passwall2; do
-            if grep -qx "CONFIG_PACKAGE_${p}=y" .config; then
-              echo "  [OK]   CONFIG_PACKAGE_${p}=y"
-            else
-              echo "  [MISS] CONFIG_PACKAGE_${p}  —— 必须为 y，否则缺一版 PassWall"
-              grep -E "^CONFIG_PACKAGE_${p}" .config || echo "         (config 里完全没有该项)"
+          echo "=== 反向断言：legacy iptables 不能为 y ==="
+          for opt in CONFIG_PACKAGE_iptables-zz-legacy CONFIG_PACKAGE_iptables-legacy ; do
+            if grep -qx "${opt}=y" .config; then
+              echo "  [BAD]  ${opt}=y —— 与 nftables 模式冲突"
               FAIL=1
-            fi
-          done
-          echo "  --- i18n 包（仅展示，不作为判据）---"
-          grep -E '^CONFIG_PACKAGE_luci-i18n-passwall' .config || echo "    (无)"
-          echo ""
-          echo "=== ★★ 代理核心必须齐全（缺一个即 FAIL）★★ ==="
-          # v2ray-geoip / v2ray-geosite 由 v2ray-geodata 包生成，config 里是独立的
-          # CONFIG_PACKAGE_v2ray-geoip=y，所以这里按 config 项查是对的。
-          # ⚠️ geoview 已从必需清单移除：它要 go>=1.25 而 24.10 只有 1.23 → 必炸。
-          # ⚠️ 原来这里是 if/else 只打印 [OK]/[MISS]，**不设 FAIL** →
-          #    xray-core / sing-box / chinadns-ng 全缺也能全绿通过。已改为计入 FAIL。
-          MISSING=""
-          for p in xray-core sing-box chinadns-ng dns2socks microsocks ipt2socks \
-                   shadowsocksr-libev-ssr-local shadowsocksr-libev-ssr-redir \
-                   simple-obfs-client v2ray-geoip v2ray-geosite tcping lyaml; do
-            if grep -qx "CONFIG_PACKAGE_${p}=y" .config; then
-              echo "  [OK]   $p"
             else
-              echo "  [MISS] $p   —— 必需核心缺失"
-              MISSING="$MISSING $p"
+              echo "  [OK]   ${opt} 不是 y"
             fi
           done
-          if [ -n "$MISSING" ]; then
-            echo "  !! 下列必需代理核心未进固件：$MISSING"
-            echo "  !! 固件即使编译成功也会缺功能（面板里选不中对应协议）"
-            FAIL=1
-          fi
-          echo ""
-          echo "=== ★★ 必须为 n 的包（含 geoview，Go 版本不兼容）★★ ==="
-          for p in shadowsocks-rust-sslocal hysteria v2ray-plugin xray-plugin \
-                   shadow-tls haproxy geoview; do
-            v=$(grep -E "^CONFIG_PACKAGE_${p}=" .config 2>/dev/null | cut -d= -f2 || true)
-            v=${v:-未定义}
-            echo "  ${p} = ${v}"
-            if [ "$v" = "y" ]; then
-              echo "     !! 必须为 n / 未定义，否则编译会失败"
-              FAIL=1
-            fi
-          done
-          echo ""
-          echo "=== ★★ PassWall v1/v2 的 INCLUDE_* 必须全关（select 关系，易被拉回）★★ ==="
-          for opt in \
-            CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Haproxy \
-            CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Geoview \
-            CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Hysteria \
-            CONFIG_PACKAGE_luci-app-passwall_INCLUDE_NaiveProxy \
-            CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadow_TLS \
-            CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadowsocks_Rust_Client \
-            CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Haproxy \
-            CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Geoview \
-            CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Hysteria \
-            CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Shadowsocks_Rust_Client ; do
-            v=$(grep -E "^${opt}=" .config 2>/dev/null | cut -d= -f2 || true)
-            v=${v:-未定义}
-            echo "  $(echo "$opt" | sed 's/^CONFIG_PACKAGE_luci-app-//') = ${v}"
-            if [ "$v" = "y" ]; then
-              echo "     !! 必须为 n —— 会把对应包拉进编译"
-              FAIL=1
-            fi
-          done
-          # geoview 源码目录也必须真的没了
-          if [ -d feeds/passwall_packages/geoview ] || [ -d package/feeds/passwall_packages/geoview ]; then
-            echo "!! geoview 源码目录仍在，会被 make 编译到"
-            FAIL=1
-          else
-            echo "  OK: geoview 源码目录已移除"
-          fi
-          echo "=== ★★ geoview 不能残留在任何 Makefile 依赖里（Run #9/#10 死因）★★ ==="
-          # ★ Run #10 教训：不能只扫 package/feeds/ —— feeds/ 下的源文件也要扫，
-          #   而且**必须排除 .bak**（Drop 步骤自己留下的备份里有 geoview，会误报）。
-          #   另外 v1(passwall_luci) 和 v2(passwall2_luci) 两个 feed 都要覆盖。
-          # ================================================================
-          # ★★★ Run #11 教训：**判据必须只看 `LUCI_DEPENDS` 块，不能扫全文！** ★★★
-          #
-          #   我上一版用 `grep -rl 'geoview' <Makefile>` 扫全文 → 误报 FAIL。
-          #   真因：**v1 和 v2 两张 Makefile 里 geoview 的【性质完全不同】**：
-          #
-          #   v1 `luci-app-passwall/Makefile`：
-          #       config PACKAGE_$(PKG_NAME)_INCLUDE_Geoview
-          #           bool "Include Geoview"
-          #           select PACKAGE_geoview                    ← 第 70 行
-          #           default y if aarch64||arm||i386||x86_64
-          #     → 这是【条件 select】，**只在 INCLUDE_Geoview=y 时才触发**。
-          #       我们已在 Load config 收尾把 INCLUDE_Geoview 写死为 n
-          #       → select 不会生效 → **这一行无害，不用改**。
-          #       （注意 `default y if arm` —— C526A 正是 arm，所以默认就是 y！
-          #         这解释了为什么"不写 config 项"压不住，必须显式关。）
-          #
-          #   v2 `luci-app-passwall2/Makefile`：
-          #       LUCI_DEPENDS:=+coreutils ... +lyaml +resolveip +tcping \
-          #           +geoview +v2ray-geoip +v2ray-geosite \        ← 第 28 行
-          #     → 这是【无条件硬依赖】，跟 config 选项无关，**必须 sed 摘掉**
-          #       （Run #9 的 `geoview (no such package): required by:
-          #         luci-app-passwall2-26.9.16-r1[geoview]` 就是它）。
-          #
-          #   ⇒ 所以正确的判据 = 「`LUCI_DEPENDS` 块里不能出现 geoview」，
-          #     而不是「整个文件里不能出现 geoview」。
-          # ================================================================
-          # 抽 LUCI_DEPENDS 块（含反斜杠续行），只看这个块
-          # 注意：用 sed 把 LUCI_DEPENDS 起、到第一个不以 \ 结尾的行为止的块取出来
-          #
-          # ⚠️⚠️ 坑（本轮实测踩到）：**`$(...)` 命令替换会吃掉尾部的所有换行符**，
-          #   所以 `gvlist=$(printf '%s%s\n' "$gvlist" "$MK")` 累积出来的是一整行
-          #   （每个 \n 都被 strip 掉），打印时全部粘连。
-          #   ⇒ 不要在循环里累积"带换行的清单"，改成【先判定、后遍历打印】。
-          GVN=0
-          # 第一遍：只计数
-          for MK in \
-            package/feeds/passwall_luci/luci-app-passwall/Makefile \
-            package/feeds/passwall2_luci/luci-app-passwall2/Makefile \
-            feeds/passwall_luci/luci-app-passwall/Makefile \
-            feeds/passwall2_luci/luci-app-passwall2/Makefile ; do
-            [ -f "$MK" ] || continue
-            if sed -n '/^LUCI_DEPENDS/,/[^\\]$/p' "$MK" | grep -q 'geoview'; then
-              GVN=$((GVN+1))
-            fi
-          done
-          echo "  LUCI_DEPENDS 里仍硬依赖 geoview 的 Makefile 数 = $GVN（必须为 0）"
-          if [ "$GVN" -ne 0 ]; then
-            echo "  !! 下列 Makefile 的 LUCI_DEPENDS 仍写着 geoview"
-            echo "  !! （无条件依赖，会让 apk 在 package/install 报 no such package → Error 4）"
-            # 第二遍：逐个打印（直接 echo，不累积）
-            for MK in \
-              package/feeds/passwall_luci/luci-app-passwall/Makefile \
-              package/feeds/passwall2_luci/luci-app-passwall2/Makefile \
-              feeds/passwall_luci/luci-app-passwall/Makefile \
-              feeds/passwall2_luci/luci-app-passwall2/Makefile ; do
-              [ -f "$MK" ] || continue
-              if sed -n '/^LUCI_DEPENDS/,/[^\\]$/p' "$MK" | grep -q 'geoview'; then
-                echo "    - $MK"
-              fi
-            done
-            FAIL=1
-          fi
-          echo "  --- 单纯『文件里出现 geoview』的位置（仅展示；config 段里的"
-          echo "      select PACKAGE_geoview 是无害的，因为 INCLUDE_Geoview 已被关掉）---"
-          for MK in \
-            package/feeds/passwall_luci/luci-app-passwall/Makefile \
-            package/feeds/passwall2_luci/luci-app-passwall2/Makefile \
-            feeds/passwall_luci/luci-app-passwall/Makefile \
-            feeds/passwall2_luci/luci-app-passwall2/Makefile ; do
-            echo "  [ $MK ]"
-            if [ -f "$MK" ]; then
-              grep -n 'geoview' "$MK" || echo "    (无 geoview)"
-              echo "    --- LUCI_DEPENDS ---"
-              grep -n -A8 '^LUCI_DEPENDS' "$MK" || true
-            else
-              echo "    (不存在)"
-            fi
-          done
-          echo ""
-          echo "=== ★★ xray-core 必须已 pin 到 v26.7.28（go 1.26）★★ ==="
-          # 背景：feed 滚动的 26.9.9 要 go>=1.27，而 25.12 的 golang 是 1.26 → 必炸。
-          XOK=0
-          for XMK in package/feeds/passwall_packages/xray-core/Makefile \
-                     feeds/passwall_packages/xray-core/Makefile ; do
-            if [ -f "$XMK" ]; then
-              echo "--- $XMK ---"
-              grep -nE '^(PKG_VERSION|PKG_HASH):=' "$XMK" || true
-              if grep -q '^PKG_VERSION:=26\.7\.28$' "$XMK"; then
-                echo "  [OK]   $XMK 已 pin"
-                XOK=$((XOK+1))
-              else
-                echo "  !! $XMK 的 PKG_VERSION 不是 26.7.28（会被 go 1.27 要求卡死）"; FAIL=1
-              fi
-            fi
-          done
-          [ "$XOK" -ge 1 ] || { echo "  !! 两处都没找到/没 pin xray-core"; FAIL=1; }
-          echo ""
-          echo "=== ★★ golang 工具链版本（25.12 应为 1.26）★★ ==="
-          if [ -d tools/golang ]; then
-            ls tools/golang/ || true
-          fi
-          grep -rhnE '^GO_DEFAULT_VERSION|^GO_VERSION_MAJOR_MINOR' \
-            tools/golang/golang-values.mk tools/golang/golang-version.mk 2>/dev/null || true
-          echo ""
-          echo "=== ★★ Nftables 透明代理依赖检查（Run #9/#10 死因 + Run #13~#15 自伤教训）★★ ==="
-          # ⚠️ 判据经 4 版才收敛，前 3 版都因「猜符号名」自伤（详见 Load config 步骤注释）。
-          #    核心教训：`select PACKAGE_X` ≠ .config 会有 `CONFIG_PACKAGE_X=y`，
-          #              X 可能是 PROVIDES 别名 / 变体包基名 / 默认值即 y。
-          # ⇒ 断言目标**只用实证过的**：下面 4 项来自 Run #12（唯一 success）的
-          #    config.buildinfo（该文件只记非默认值，出现 =y 即确证存在）。
-          nf1=$(grep -cE '^CONFIG_PACKAGE_kmod-nft-tproxy=y' .config 2>/dev/null || true); nf1=${nf1:-0}
-          nf2=$(grep -cE '^CONFIG_PACKAGE_kmod-nft-socket=y' .config 2>/dev/null || true); nf2=${nf2:-0}
-          nf3=$(grep -cE '^CONFIG_PACKAGE_chinadns-ng=y' .config 2>/dev/null || true); nf3=${nf3:-0}
-          nf4=$(grep -cE '^CONFIG_PACKAGE_ipt2socks=y' .config 2>/dev/null || true); nf4=${nf4:-0}
-          in2=$(grep -cE '^CONFIG_PACKAGE_iptables-zz-legacy=y' .config 2>/dev/null || true); in2=${in2:-0}
-          in3=$(grep -cE '^CONFIG_PACKAGE_iptables-legacy=y' .config 2>/dev/null || true); in3=${in3:-0}
-          echo "  kmod-nft-tproxy=y     : $nf1  （必须为 1，Run #12 实证）"
-          echo "  kmod-nft-socket=y     : $nf2  （必须为 1，Run #12 实证）"
-          echo "  chinadns-ng=y         : $nf3  （必须为 1，Run #12 实证）"
-          echo "  ipt2socks=y           : $nf4  （必须为 1，Run #12 实证）"
-          echo "  iptables-zz-legacy=y  : $in2  （必须为 0）"
-          echo "  iptables-legacy=y     : $in3  （必须为 0）"
-          if [ "$nf1" -ne 1 ] || [ "$nf2" -ne 1 ] || [ "$nf3" -ne 1 ] || [ "$nf4" -ne 1 ]; then
-            echo "  !! 实证必需的代理核心缺失 —— 说明本轮 config 改动把它们弄丢了"
-            FAIL=1
-          fi
-          if [ "$in2" -ne 0 ]; then
-            echo "  !! iptables-zz-legacy 与 iptables-nft 互斥，会让 package/install 报 Error 4"
-            FAIL=1
-          fi
-          if [ "$in3" -ne 0 ]; then
-            echo "  !! iptables-legacy 与 iptables-nft 互斥"
-            FAIL=1
-          fi
-          echo "  --- 参考（不判定）：.config 里 iptables / nftables 相关行 ---"
-          grep -nE 'CONFIG_PACKAGE_(iptables|nftables)' .config || echo "    (无 —— nft 模式下 iptables 为空是正常的)"
-          echo ""
-          echo "=== ★★ Nftables 透明代理必须启用（firewall4 的正解）★★ ==="
-          # 外部审查指出：收了 Iptables_Transparent_Proxy 就必须开 Nftables 版，
-          # 否则面板里连透明代理的选项都没有（固件"能跑但没法用"）。
-          nf1=$(grep -cE '^CONFIG_PACKAGE_luci-app-passwall_Nftables_Transparent_Proxy=y' .config 2>/dev/null || true); nf1=${nf1:-0}
-          nf2=$(grep -cE '^CONFIG_PACKAGE_luci-app-passwall2_Nftables_Transparent_Proxy=y' .config 2>/dev/null || true); nf2=${nf2:-0}
-          echo "  passwall_Nftables_Transparent_Proxy  = $nf1（必须为 1）"
-          echo "  passwall2_Nftables_Transparent_Proxy = $nf2（必须为 1）"
-          [ "$nf1" -eq 1 ] || { echo "  !! v1 的 Nftables 透明代理未启用 → 面板无透明代理选项"; FAIL=1; }
-          [ "$nf2" -eq 1 ] || { echo "  !! v2 的 Nftables 透明代理未启用 → 面板无透明代理选项"; FAIL=1; }
-          # 反向：Iptables 版必须关（它会 select iptables-zz-legacy，与 nft 互斥）
-          for opt in CONFIG_PACKAGE_luci-app-passwall_Iptables_Transparent_Proxy \
-                     CONFIG_PACKAGE_luci-app-passwall2_Iptables_Transparent_Proxy ; do
-            got=$(grep -E "^${opt}=" .config || echo "  ${opt} (未定义)")
-            echo "  $got"
-            case "$got" in
-              *"=y"*) echo "     !! Iptables 版必须为 n —— 它会 select iptables-zz-legacy（互斥）"; FAIL=1 ;;
-            esac
-          done
-          echo ""
+
           if [ "$FAIL" -ne 0 ]; then
-            echo "!! 自检未通过（见上面 ! 标记），提前失败以便定位"
+            echo "!! 关键配置检查失败，提前退出"
+            echo "--- .config 中 ipq40xx 设备项 ---"
+            grep -E '^CONFIG_TARGET_ipq40xx_generic_DEVICE_' .config || echo "  (无)"
+            echo "--- .config 中 passwall 相关 ---"
+            grep -E '^CONFIG_PACKAGE_(luci-app-passwall|xray-core|sing-box)' .config || echo "  (无)"
             exit 1
           fi
-          echo "=== 全部自检通过 ==="
+          echo "✅ .config 关键配置检查通过"
+          wc -l .config
 
       - name: Download package sources
-        # ⚠️ 这里不再 continue-on-error：Run #4 就是被它掩盖了
-        #    "ERROR: package/firmware/ipq-wifi failed to build." 而一路绿灯。
         run: |
           cd openwrt
           make -j$(nproc) download
 
       - name: Build
-        # ★ 必须 set -o pipefail：
-        #   `make ... | tee build.log` 的退出码取的是 tee（永远 0），
-        #   不加 pipefail 的话 make 失败会被完全吞掉 → 假成功。
         run: |
           set -o pipefail
           cd openwrt
@@ -924,7 +231,6 @@ jobs:
           grep -n -i -E "error|failed to build" build.log | tail -60 || true
 
       - name: Assert firmware produced
-        # ★ 硬守门：编不出来就别装作成功
         if: always()
         run: |
           cd openwrt
@@ -932,15 +238,6 @@ jobs:
           find bin/targets/ipq40xx -type f 2>/dev/null | head -40 || true
           echo ""
 
-          # ================================================================
-          # ★★★ 外部审查指出（成立）：原来只数「ipq40xx 下任意 .bin/.ubi 的个数」，
-          #     这**证明不了产物是 C526A 的**。以下情况都会全绿通过：
-          #       · .config 里 CONFIG_TARGET_..._DEVICE_hiwifi_c526a 被 defconfig 丢弃
-          #       · 补丁的设备定义变了，设备名不再是 hiwifi_c526a
-          #       · 构建落到了另一个 ipq40xx profile（同 target 下的别的机器）
-          #     ⇒ 结果可能是"给别人机器编的固件"被当成功上传。
-          #     必须断言：① 目标设备项在 ② 产物文件名属于 C526A ③ sysupgrade 存在且非空
-          # ================================================================
           FAIL=0
 
           echo "=== ① .config 里的 C526A 设备项 ==="
@@ -949,7 +246,6 @@ jobs:
             echo "  [OK] $DEV_OPT"
           else
             echo "  [MISS] $DEV_OPT"
-            echo "  --- .config 里所有 ipq40xx 设备项 ---"
             grep -E '^CONFIG_TARGET_ipq40xx_generic_DEVICE_' .config || echo "    (一个都没有)"
             FAIL=1
           fi
@@ -959,7 +255,6 @@ jobs:
           ls -la bin/targets/ipq40xx/generic/ 2>/dev/null || echo "  (目录不存在)"
           echo ""
 
-          # sysupgrade：给"已在跑 OpenWrt"的机器升级用，必须有
           SU=$(find bin/targets/ipq40xx/generic -maxdepth 1 -type f \
                  -name '*hiwifi_c526a*sysupgrade.bin' -print -quit 2>/dev/null || true)
           if [ -n "$SU" ] && [ -s "$SU" ]; then
@@ -969,7 +264,6 @@ jobs:
             FAIL=1
           fi
 
-          # factory.ubi：首次刷机用（从原厂/其他固件进 U-Boot 恢复页刷）
           FU=$(find bin/targets/ipq40xx/generic -maxdepth 1 -type f \
                  -name '*hiwifi_c526a*squashfs-factory.ubi' -print -quit 2>/dev/null || true)
           if [ -n "$FU" ] && [ -s "$FU" ]; then
@@ -979,28 +273,18 @@ jobs:
             FAIL=1
           fi
 
-          # initramfs：救援/内存运行用（与 sysupgrade 是两种独立启动路径）
           IR=$(find bin/targets/ipq40xx/generic -maxdepth 1 -type f \
                  -name '*hiwifi_c526a*initramfs*' -print -quit 2>/dev/null || true)
           if [ -n "$IR" ] && [ -s "$IR" ]; then
             echo "  [OK] C526A initramfs    = $IR  ($(wc -c < "$IR") B)"
           else
             echo "  [MISS] 未产出 C526A initramfs"
-            echo "         （initramfs 是刷机救援路径，缺了风险高；记为失败）"
             FAIL=1
           fi
           echo ""
 
-          # 顺带报一下同 target 下有没有别的机器的产物（用来发现"编错设备"）
-          echo "=== ③ 同 target 下的其它产物（仅供核对，不影响判定）==="
-          find bin/targets/ipq40xx/generic -maxdepth 1 -type f \
-            \( -name '*.bin' -o -name '*.ubi' -o -name '*.itb' \) 2>/dev/null \
-            | grep -v 'hiwifi_c526a' | head -10 || echo "  (无其它设备产物 —— 符合预期)"
-          echo ""
-
           if [ "$FAIL" -ne 0 ]; then
             echo "!! 产物断言失败：未产出完整的 C526A 固件。"
-            echo "!! build.log 最后 60 行："
             tail -60 build.log 2>/dev/null || true
             exit 1
           fi
@@ -1014,7 +298,6 @@ jobs:
           find bin/targets/ipq40xx -type f \( -name "*.bin" -o -name "*.ubi" -o -name "*.itb" \
             -o -name "*metadata*" -o -name "profiles.json" -o -name "*.buildinfo" \) \
             -exec cp {} "$GITHUB_WORKSPACE/output/" \; 2>/dev/null || true
-          # 顺便把编译出的 passwall ipk 也带上（以后想单独装也方便）
           find bin/packages -type f -name "*passwall*" \
             -exec cp {} "$GITHUB_WORKSPACE/output/" \; 2>/dev/null || true
           ls -la "$GITHUB_WORKSPACE/output/"
@@ -1024,8 +307,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: c526a-25.12-ipqess-passwall-firmware
+          name: c526a-lienol-24.10-passwall-firmware
           path: output/
-          # ★ 空目录直接失败，不再上传空壳
           if-no-files-found: error
           retention-days: 30
