@@ -1,31 +1,34 @@
 # ============================================================================
 # OpenWrt 24.10 — HiWiFi C526A (极路由X)
-# 主路由模式 + 无线 + 完整 LuCI 中文 + LAN 10.0.0.5
+# 主路由模式 + 无线 + 完整 LuCI中文 + LAN 10.0.0.5
 # ============================================================================
-
 # ---------- Target ----------
 CONFIG_TARGET_ipq40xx=y
 CONFIG_TARGET_ipq40xx_generic=y
 CONFIG_TARGET_ipq40xx_generic_DEVICE_hiwifi_c526a=y
-
 # ---------- 内核 ----------
 CONFIG_KERNEL_KALLSYMS=y
 CONFIG_KERNEL_DEBUG_INFO=n
 CONFIG_KERNEL_DEBUG_INFO_BTF=n
-
+CONFIG_DEBUG=n
 # ============================================================================
-# 无线（QCA4019）
+# 无线（QCA4019 IPQ4019 2.4G+5G）
 # ============================================================================
+CONFIG_PACKAGE_kmod-ath10k=y
+CONFIG_PACKAGE_kmod-ath10k-ct=y
+CONFIG_PACKAGE_ath10k-firmware-qca4019-ct=y
 CONFIG_PACKAGE_wpad-basic-mbedtls=y
-
 # ============================================================================
 # LuCI 核心 + 完整中文（24.10 使用 zh_Hans）
 # ============================================================================
+CONFIG_LUCI_LANG_zh_Hans=y
 CONFIG_PACKAGE_luci=y
-CONFIG_PACKAGE_luci-app-firewall=y
-CONFIG_PACKAGE_luci-app-package-manager=y
+CONFIG_PACKAGE_luci-base=y
+CONFIG_PACKAGE_luci-mod-admin-full=y
+CONFIG_PACKAGE_luci-mod-network=y
+CONFIG_PACKAGE_luci-mod-status=y
+CONFIG_PACKAGE_luci-mod-system=y
 CONFIG_PACKAGE_luci-theme-bootstrap=y
-
 CONFIG_PACKAGE_luci-i18n-base-zh_Hans=y
 CONFIG_PACKAGE_luci-i18n-firewall-zh_Hans=y
 CONFIG_PACKAGE_luci-i18n-package-manager-zh_Hans=y
@@ -38,32 +41,29 @@ CONFIG_PACKAGE_luci-i18n-sqm-zh_Hans=y
 CONFIG_PACKAGE_luci-i18n-statistics-zh_Hans=y
 CONFIG_PACKAGE_luci-i18n-nlbwmon-zh_Hans=y
 CONFIG_PACKAGE_luci-i18n-wol-zh_Hans=y
-
 # ============================================================================
 # 主路由核心：PPPoE + DHCP + DNS + IPv6
 # ============================================================================
 CONFIG_PACKAGE_ppp=y
 CONFIG_PACKAGE_ppp-mod-pppoe=y
 CONFIG_PACKAGE_luci-proto-ppp=y
-
 # dnsmasq-full 与 dnsmasq 互斥，必须显式禁用基础版
 # CONFIG_PACKAGE_dnsmasq is not set
 CONFIG_PACKAGE_dnsmasq-full=y
-
 CONFIG_PACKAGE_odhcpd-ipv6only=y
 CONFIG_PACKAGE_odhcp6c=y
 CONFIG_PACKAGE_luci-proto-ipv6=y
-
 # ============================================================================
 # 防火墙（firewall4 + nftables）
 # firewall4 会自动拉取所需 nft kmod
 # ============================================================================
 CONFIG_PACKAGE_firewall4=y
 CONFIG_PACKAGE_nftables=y
-
 # ============================================================================
 # 常用 LuCI 应用
 # ============================================================================
+CONFIG_PACKAGE_luci-app-firewall=y
+CONFIG_PACKAGE_luci-app-package-manager=y
 CONFIG_PACKAGE_luci-app-commands=y
 CONFIG_PACKAGE_luci-app-ttyd=y
 CONFIG_PACKAGE_luci-app-filemanager=y
@@ -73,7 +73,6 @@ CONFIG_PACKAGE_luci-app-sqm=y
 CONFIG_PACKAGE_luci-app-statistics=y
 CONFIG_PACKAGE_luci-app-nlbwmon=y
 CONFIG_PACKAGE_luci-app-wol=y
-
 # ============================================================================
 # 常用命令行工具
 # ============================================================================
@@ -90,7 +89,6 @@ CONFIG_PACKAGE_zoneinfo-asia=y
 CONFIG_PACKAGE_tcpdump=y
 CONFIG_PACKAGE_iperf3=y
 CONFIG_PACKAGE_bind-dig=y
-
 # ============================================================================
 # NAND / UBI 维护工具
 # ============================================================================
@@ -98,7 +96,11 @@ CONFIG_PACKAGE_kmod-mtd-rw=y
 CONFIG_PACKAGE_mtd-utils=y
 CONFIG_PACKAGE_ubi-utils=y
 CONFIG_PACKAGE_uboot-envtools=y
-
+# ============================================================================
+# C526A 硬件支持：按键、LED
+# ============================================================================
+CONFIG_PACKAGE_kmod-gpio-button-hotplug=y
+CONFIG_PACKAGE_kmod-leds-gpio=y
 # ============================================================================
 # 版本标识
 # ============================================================================
@@ -107,10 +109,8 @@ CONFIG_VERSION_DIST="OpenWrt-C526A"
 CONFIG_VERSION_NUMBER="24.10-luci-wifi-lan10"
 CONFIG_VERSION_MANUFACTURER="HiWiFi"
 CONFIG_VERSION_PRODUCT="C526A"
-
 # ============================================================================
 # 构建选项
 # ============================================================================
 CONFIG_CCACHE=y
 CONFIG_AUTOREMOVE=n
-CONFIG_DEBUG=n
