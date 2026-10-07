@@ -14,9 +14,7 @@ CONFIG_DEBUG=n
 # ============================================================================
 # 无线（QCA4019 IPQ4019 2.4G+5G）
 # ============================================================================
-CONFIG_PACKAGE_kmod-ath10k=y
-CONFIG_PACKAGE_kmod-ath10k-ct=y
-CONFIG_PACKAGE_ath10k-firmware-qca4019-ct=y
+
 CONFIG_PACKAGE_wpad-basic-mbedtls=y
 # ============================================================================
 # LuCI 核心 + 完整中文（24.10 使用 zh_Hans）
