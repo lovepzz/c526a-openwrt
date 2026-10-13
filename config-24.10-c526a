@@ -1,11 +1,6 @@
 # ============================================================================
 # OpenWrt 24.10 — HiWiFi C526A (极路由X)
 # 主路由模式 + 三频无线 + 完整 LuCI 中文 + LAN 10.0.0.5
-#
-# 说明：
-#   - 只列核心必需项，其他依赖交给 make defconfig 自动解析
-#   - 移除所有不确定的包名（如 kmod-mt7615-common）
-#   - workflow 会额外追加功率解锁与驱动项
 # ============================================================================
 
 # ---------- Target ----------
@@ -22,13 +17,11 @@ CONFIG_DEBUG=n
 # ============================================================================
 # 无线驱动与固件（C526A 三频核心）
 # ============================================================================
-# IPQ4019 内置 2.4G + 5G（使用 CT 版驱动，功率控制更准）
 CONFIG_PACKAGE_kmod-ath10k-ct=y
 CONFIG_PACKAGE_ath10k-firmware-qca4019-ct=y
 CONFIG_PACKAGE_ath10k-firmware-qca4019-ct-htt=y
 
 # MT7615 外挂 5G（PCIe 第三频）
-# 固件包名由 workflow 自动探测，不在此处写死
 CONFIG_PACKAGE_kmod-mt7615e=y
 
 # 无线管理工具与认证
@@ -47,6 +40,10 @@ CONFIG_PACKAGE_luci-mod-status=y
 CONFIG_PACKAGE_luci-mod-system=y
 CONFIG_PACKAGE_luci-theme-bootstrap=y
 CONFIG_PACKAGE_luci-i18n-base-zh_Hans=y
+CONFIG_PACKAGE_luci-i18n-firewall-zh_Hans=y
+CONFIG_PACKAGE_luci-i18n-package-manager-zh_Hans=y
+CONFIG_PACKAGE_luci-i18n-ttyd-zh_Hans=y
+CONFIG_PACKAGE_luci-i18n-filemanager-zh_Hans=y
 
 # ============================================================================
 # 主路由核心：PPPoE + DHCP + DNS + IPv6
@@ -55,9 +52,12 @@ CONFIG_PACKAGE_ppp=y
 CONFIG_PACKAGE_ppp-mod-pppoe=y
 CONFIG_PACKAGE_luci-proto-ppp=y
 
-# dnsmasq-full 与 dnsmasq 互斥，必须显式禁用基础版
+# dnsmasq-full 与 dnsmasq 互斥，显式禁用基础版
 CONFIG_PACKAGE_dnsmasq=n
 CONFIG_PACKAGE_dnsmasq-full=y
+
+# ★ DHCP 关键依赖：dnsmasq-full 需要 nf-conntrack-netlink 才能正常工作
+CONFIG_PACKAGE_kmod-nf-conntrack-netlink=y
 
 CONFIG_PACKAGE_odhcpd-ipv6only=y
 CONFIG_PACKAGE_odhcp6c=y
@@ -65,18 +65,20 @@ CONFIG_PACKAGE_luci-proto-ipv6=y
 
 # ============================================================================
 # 防火墙（firewall4 + nftables）
-# firewall4 会自动拉取所需 kmod，无需手动指定
 # ============================================================================
 CONFIG_PACKAGE_firewall4=y
 CONFIG_PACKAGE_nftables=y
 
 # ============================================================================
-# 常用 LuCI 应用（只保留核心几个，避免包名错误）
+# 常用 LuCI 应用
 # ============================================================================
 CONFIG_PACKAGE_luci-app-firewall=y
 CONFIG_PACKAGE_luci-app-package-manager=y
 CONFIG_PACKAGE_luci-app-ttyd=y
 CONFIG_PACKAGE_luci-app-filemanager=y
+CONFIG_PACKAGE_luci-app-commands=y
+CONFIG_PACKAGE_luci-app-ddns=y
+CONFIG_PACKAGE_luci-app-wol=y
 
 # ============================================================================
 # 常用命令行工具
