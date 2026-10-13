@@ -4,9 +4,13 @@
 # 射频归属：
 #   &wifi0           = QCA4019 内置 2.4G (AHB)
 #   &wifi1           = QCA4019 内置 5G  (AHB)
-#   &pcie0/wifi@0,0  = MT7615 外挂 5G  (PCIe)
+#   &pcie0/wifi@0,0  = MT7615 外挂 5G  (PCIe)   ← 第三频
 #
 # ⚠️ IPQ4019 dtsi 只有 wifi0 和 wifi1，不存在 &wifi2
+#
+# 需要放在仓库根目录的文件：
+#   - 0001-Added-support-for-HIWIFI-c526a-24.10.patch
+#   - config-24.10-c526a
 # ============================================================================
 
 name: Build C526A
@@ -92,14 +96,15 @@ jobs:
           test -f target/linux/ipq40xx/files-6.6/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts || { echo "DTS 未落地"; exit 1; }
           echo "补丁自检通过"
 
-      - name: Debug DTS nodes
+      - name: Backup and inspect DTS
         run: |
           cd openwrt
           DTS=target/linux/ipq40xx/files-6.6/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts
-          echo "=== wifi / pcie 相关行 ==="
+          cp "$DTS" "${DTS}.orig"
+          echo "=== 原始 DTS 中 wifi / pcie 相关行 ==="
           grep -n -E "wifi|pcie|mt76|mt7615" "$DTS" || echo "NONE"
-          echo "=== DTS 末尾 60 行 ==="
-          tail -60 "$DTS"
+          echo "=== 原始 DTS 末尾 40 行 ==="
+          tail -40 "$DTS"
 
       - name: Unlock power limit in regdb
         run: |
@@ -120,7 +125,7 @@ jobs:
           sed -i -E 's#\(5250 - 5330 @ 80\), \(N/A, [0-9]+\)#(5250 - 5330 @ 80), (N/A, 30)#g' "$REGDB"
           sed -i -E 's#\(5490 - 5710 @ 80\), \(N/A, [0-9]+\)#(5490 - 5710 @ 80), (N/A, 30)#g' "$REGDB"
           sed -i -E 's#\(5735 - 5835 @ 80\), \(N/A, [0-9]+\)#(5735 - 5835 @ 80), (N/A, 30)#g' "$REGDB"
-          echo "=== 修改后 ==="
+          echo "=== 修改后的功率行 ==="
           grep -E "2402 - 2472|5170 - 5250|5250 - 5330|5490 - 5710|5735 - 5835" "$REGDB" | head -20 || true
 
       - name: Enable 3-band WiFi in DTS
@@ -128,6 +133,7 @@ jobs:
           set -e
           cd openwrt
           DTS=target/linux/ipq40xx/files-6.6/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts
+
           if grep -q '^&wifi0' "$DTS"; then
             echo "DTS 中已存在 &wifi0，跳过"
           else
@@ -156,8 +162,10 @@ jobs:
             echo "};" >> "$DTS"
             echo "已追加三频节点"
           fi
-          echo "=== DTS 末尾 50 行 ==="
-          tail -50 "$DTS"
+          echo "=== 修改后 DTS 末尾 60 行 ==="
+          tail -60 "$DTS"
+          echo "=== 与原始的差异 ==="
+          diff "${DTS}.orig" "$DTS" || true
 
       - name: Update and install feeds
         run: |
@@ -190,7 +198,7 @@ jobs:
           echo "uci commit dhcp" >> "$LANFILE"
           echo "exit 0" >> "$LANFILE"
           chmod +x "$LANFILE"
-          echo "=== 内容 ==="
+          echo "=== LAN 默认配置 ==="
           cat "$LANFILE"
 
       - name: Set default wireless config
@@ -221,7 +229,7 @@ jobs:
           echo "uci commit wireless" >> "$WFILE"
           echo "exit 0" >> "$WFILE"
           chmod +x "$WFILE"
-          echo "=== 内容 ==="
+          echo "=== 无线默认配置 ==="
           cat "$WFILE"
 
       - name: Load config
