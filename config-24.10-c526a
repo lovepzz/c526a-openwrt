@@ -1,6 +1,10 @@
 # ============================================================================
 # OpenWrt 24.10 — HiWiFi C526A (极路由X)
-# 主路由模式 + 三频无线 + 完整 LuCI 中文 + LAN 10.0.0.5
+# 主路由模式 + 三频无线 + 完整 LuCI 中文 + 功率彻底解锁 + LAN 10.0.0.5
+#
+# 说明：
+#   - 只列核心必需项，其他依赖交给 make defconfig 自动解析
+#   - 功率解锁相关选项在 workflow 的 Load config 步骤也会强制追加
 # ============================================================================
 
 # ---------- Target ----------
@@ -15,8 +19,19 @@ CONFIG_KERNEL_DEBUG_INFO_BTF=n
 CONFIG_DEBUG=n
 
 # ============================================================================
+# 功率解锁（配合 workflow 里的 regdb 修改）
+# ============================================================================
+# ath10k 尊重用户空间监管设置，不再死守 EEPROM
+CONFIG_ATH_USER_REGD=y
+# cfg80211 放宽监管检查
+CONFIG_CFG80211_CERTIFICATION_ONUS=y
+# CT 版驱动的功率衰减控制
+CONFIG_ATH10K_CT_ATTENUATION=y
+
+# ============================================================================
 # 无线驱动与固件（C526A 三频核心）
 # ============================================================================
+# IPQ4019 内置 2.4G + 5G
 CONFIG_PACKAGE_kmod-ath10k-ct=y
 CONFIG_PACKAGE_ath10k-firmware-qca4019-ct=y
 CONFIG_PACKAGE_ath10k-firmware-qca4019-ct-htt=y
@@ -56,7 +71,7 @@ CONFIG_PACKAGE_luci-proto-ppp=y
 CONFIG_PACKAGE_dnsmasq=n
 CONFIG_PACKAGE_dnsmasq-full=y
 
-# ★ DHCP 关键依赖：dnsmasq-full 需要 nf-conntrack-netlink 才能正常工作
+# DHCP 关键依赖：dnsmasq-full 需要 nf-conntrack-netlink
 CONFIG_PACKAGE_kmod-nf-conntrack-netlink=y
 
 CONFIG_PACKAGE_odhcpd-ipv6only=y
@@ -117,7 +132,7 @@ CONFIG_PACKAGE_kmod-ledtrig-heartbeat=y
 # ============================================================================
 CONFIG_VERSIONOPT=y
 CONFIG_VERSION_DIST="OpenWrt-C526A"
-CONFIG_VERSION_NUMBER="24.10-luci-wifi-lan10"
+CONFIG_VERSION_NUMBER="24.10-luci-wifi-power-unlock"
 CONFIG_VERSION_MANUFACTURER="HiWiFi"
 CONFIG_VERSION_PRODUCT="C526A"
 
