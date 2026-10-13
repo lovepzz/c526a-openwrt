@@ -1,11 +1,9 @@
 # ============================================================================
 # HiWiFi C526A (极路由X) — OpenWrt 24.10 + LuCI 中文 + 三频 WiFi + 功率解锁
 #
-# 稳定性设计：
-#   - 双频 (wifi0 2.4G + wifi1 5G) 为保底，一定工作
-#   - 第三频 (MT7615 PCIe) 为尽力而为，失败不影响其他
-#   - MT7615 相关操作全部带 || true 兜底
-#   - 无 heredoc、无 Python 内联，YAML 100% 可解析
+# 关键修复：
+#   - bootargs-append 改为 bootargs，覆盖 U-Boot 传参，解决疯狂重启
+#   - 加入完整的 console / rootwait / rootfstype 参数
 #
 # 需要放在仓库根目录的文件：
 #   - 0001-Added-support-for-HIWIFI-c526a-24.10.patch
@@ -100,10 +98,40 @@ jobs:
           cd openwrt
           DTS=target/linux/ipq40xx/files-6.6/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts
           cp "$DTS" "${DTS}.orig"
-          echo "=== 原始 DTS 中 wifi / pcie 相关行 ==="
-          grep -n -E "wifi|pcie|mt76|mt7615" "$DTS" || echo "NONE"
+          echo "=== 原始 DTS 中 bootargs / wifi / pcie 相关行 ==="
+          grep -n -E "bootargs|wifi|pcie|mt76|mt7615" "$DTS" || echo "NONE"
           echo "=== 原始 DTS 末尾 40 行 ==="
           tail -40 "$DTS"
+
+      # ==========================================================================
+      # 修复启动参数：把 bootargs-append 改成 bootargs，覆盖 U-Boot 传参
+      # 这是解决"疯狂重启"的关键步骤
+      # ==========================================================================
+      - name: Fix bootargs in DTS
+        run: |
+          set -e
+          cd openwrt
+          DTS=target/linux/ipq40xx/files-6.6/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts
+
+          echo "=== 修改前的 bootargs 行 ==="
+          grep -n "bootargs" "$DTS" || echo "无 bootargs"
+
+          # 方案1：把 bootargs-append 替换为 bootargs（完整覆盖）
+          # 使用 # 作为 sed 分隔符，避免 / 转义
+          sed -i 's#bootargs-append = " ubi.mtd=ubi root=/dev/ubiblock0_1"#bootargs = "console=ttyMSM0,115200n8 ubi.mtd=ubi root=/dev/ubiblock0_1 rootfstype=squashfs rootwait"#' "$DTS"
+
+          echo "=== 修改后的 bootargs 行 ==="
+          grep -n "bootargs" "$DTS" || echo "!! 替换失败，未找到 bootargs"
+
+          # 兜底：如果上面 sed 未命中（引号或空格不同），用更宽松的替换
+          if ! grep -q 'bootargs = ' "$DTS"; then
+            echo "=== 宽松替换模式 ==="
+            sed -i -E 's#bootargs-append[[:space:]]*=[[:space:]]*"[^"]*"#bootargs = "console=ttyMSM0,115200n8 ubi.mtd=ubi root=/dev/ubiblock0_1 rootfstype=squashfs rootwait"#' "$DTS"
+            grep -n "bootargs" "$DTS" || true
+          fi
+
+          echo "=== 最终 bootargs 检查 ==="
+          grep -A1 -B1 "bootargs" "$DTS" || true
 
       - name: Unlock power limit in regdb
         run: |
@@ -136,7 +164,7 @@ jobs:
           if grep -q '^&wifi0' "$DTS"; then
             echo "DTS 中已存在 &wifi0，跳过"
           else
-            # 追加双频（保底，一定工作）
+            # 追加双频
             echo "" >> "$DTS"
             echo "&wifi0 {" >> "$DTS"
             echo '    status = "okay";' >> "$DTS"
@@ -150,8 +178,7 @@ jobs:
             echo '    ieee80211-freq-limit = <5170000 5330000>;' >> "$DTS"
             echo "};" >> "$DTS"
 
-            # 追加第三频（PCIe MT7615），最简写法，避免与原有 &pcie0 冲突
-            # 使用 label 引用合并，DTC 会自动合并同名节点
+            # 追加第三频
             echo "" >> "$DTS"
             echo "&pcie0 {" >> "$DTS"
             echo "    bridge@0,0 {" >> "$DTS"
@@ -241,16 +268,11 @@ jobs:
           cd openwrt
           cp "$GITHUB_WORKSPACE/config-24.10-c526a" .config
 
-          # 功率解锁（一定保留）
           echo "CONFIG_ATH_USER_REGD=y" >> .config
           echo "CONFIG_CFG80211_CERTIFICATION_ONUS=y" >> .config
-
-          # 双频驱动（保底，必须保留）
           echo "CONFIG_PACKAGE_kmod-ath10k-ct=y" >> .config
           echo "CONFIG_PACKAGE_ath10k-firmware-qca4019-ct=y" >> .config
           echo "CONFIG_PACKAGE_ath10k-firmware-qca4019-ct-htt=y" >> .config
-
-          # 第三频驱动（尽力而为，包名不确定）
           echo "CONFIG_PACKAGE_kmod-mt7615e=y" >> .config
 
           echo "=== 第一轮 defconfig ==="
@@ -265,11 +287,7 @@ jobs:
               echo "CONFIG_PACKAGE_kmod-mt7615-firmware=y" >> .config
             fi
           fi
-          if grep -qE '^CONFIG_PACKAGE_mt7615-firmware=y' .config 2>/dev/null; then
-            echo "  OK: mt7615-firmware 已保留"
-          fi
 
-          # 再次收敛
           make defconfig
 
           echo "=== 关键选项检查 ==="
@@ -285,8 +303,8 @@ jobs:
             fi
           done
 
-          echo "=== MT7615 相关选项（可能没有，不影响编译）==="
-          grep -E 'mt7615' .config || echo "  MT7615 未在 config 中，第三频将不可用"
+          echo "=== MT7615 相关选项 ==="
+          grep -E 'mt7615' .config || echo "  MT7615 未在 config 中"
 
           echo "config 行数: $(wc -l < .config)"
           exit 0
