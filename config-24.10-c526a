@@ -1,10 +1,11 @@
 # ============================================================================
 # OpenWrt 24.10 — HiWiFi C526A (极路由X)
-# 主路由模式 + 三频无线 + 完整 LuCI 中文 + 功率彻底解锁 + LAN 10.0.0.5
+# 三频无线 + 完整 LuCI 中文 + DHCP + 功率解锁 + LAN 10.0.0.5
 #
-# 说明：
-#   - 只列核心必需项，其他依赖交给 make defconfig 自动解析
-#   - 功率解锁相关选项在 workflow 的 Load config 步骤也会强制追加
+# 硬件射频分配：
+#   MT7615 (phy0)    = 2.4G + 5G 高频
+#   QCA4019 (phy1)   = 5G
+#   QCA4019 (phy2)   = 5G
 # ============================================================================
 
 # ---------- Target ----------
@@ -19,33 +20,30 @@ CONFIG_KERNEL_DEBUG_INFO_BTF=n
 CONFIG_DEBUG=n
 
 # ============================================================================
-# 功率解锁（配合 workflow 里的 regdb 修改）
+# 功率解锁
 # ============================================================================
-# ath10k 尊重用户空间监管设置，不再死守 EEPROM
 CONFIG_ATH_USER_REGD=y
-# cfg80211 放宽监管检查
 CONFIG_CFG80211_CERTIFICATION_ONUS=y
-# CT 版驱动的功率衰减控制
-CONFIG_ATH10K_CT_ATTENUATION=y
 
 # ============================================================================
-# 无线驱动与固件（C526A 三频核心）
+# 无线驱动与固件（三频核心）
 # ============================================================================
-# IPQ4019 内置 2.4G + 5G
+# QCA4019 内置双频（phy1 / phy2，提供 5G）
 CONFIG_PACKAGE_kmod-ath10k-ct=y
 CONFIG_PACKAGE_ath10k-firmware-qca4019-ct=y
 CONFIG_PACKAGE_ath10k-firmware-qca4019-ct-htt=y
 
-# MT7615 外挂 5G（PCIe 第三频）
+# MT7615 PCIe（phy0，提供 2.4G + 5G 高频）
 CONFIG_PACKAGE_kmod-mt7615e=y
 
 # 无线管理工具与认证
 CONFIG_PACKAGE_wpad-openssl=y
 CONFIG_PACKAGE_iw=y
 CONFIG_PACKAGE_iwinfo=y
+CONFIG_PACKAGE_hostapd-utils=y
 
 # ============================================================================
-# LuCI 核心 + 完整中文
+# LuCI 核心 + 中文
 # ============================================================================
 CONFIG_LUCI_LANG_zh_Hans=y
 CONFIG_PACKAGE_luci=y
@@ -59,6 +57,7 @@ CONFIG_PACKAGE_luci-i18n-firewall-zh_Hans=y
 CONFIG_PACKAGE_luci-i18n-package-manager-zh_Hans=y
 CONFIG_PACKAGE_luci-i18n-ttyd-zh_Hans=y
 CONFIG_PACKAGE_luci-i18n-filemanager-zh_Hans=y
+CONFIG_PACKAGE_luci-i18n-commands-zh_Hans=y
 
 # ============================================================================
 # 主路由核心：PPPoE + DHCP + DNS + IPv6
@@ -71,7 +70,7 @@ CONFIG_PACKAGE_luci-proto-ppp=y
 CONFIG_PACKAGE_dnsmasq=n
 CONFIG_PACKAGE_dnsmasq-full=y
 
-# DHCP 关键依赖：dnsmasq-full 需要 nf-conntrack-netlink
+# dnsmasq-full 的必需依赖（缺了 DHCP 会失效）
 CONFIG_PACKAGE_kmod-nf-conntrack-netlink=y
 
 CONFIG_PACKAGE_odhcpd-ipv6only=y
@@ -110,6 +109,7 @@ CONFIG_PACKAGE_zoneinfo-asia=y
 CONFIG_PACKAGE_tcpdump=y
 CONFIG_PACKAGE_iperf3=y
 CONFIG_PACKAGE_ethtool=y
+CONFIG_PACKAGE_pciutils=y
 
 # ============================================================================
 # NAND / UBI 维护工具
@@ -132,7 +132,7 @@ CONFIG_PACKAGE_kmod-ledtrig-heartbeat=y
 # ============================================================================
 CONFIG_VERSIONOPT=y
 CONFIG_VERSION_DIST="OpenWrt-C526A"
-CONFIG_VERSION_NUMBER="24.10-luci-wifi-power-unlock"
+CONFIG_VERSION_NUMBER="24.10-3band-wifi"
 CONFIG_VERSION_MANUFACTURER="HiWiFi"
 CONFIG_VERSION_PRODUCT="C526A"
 
