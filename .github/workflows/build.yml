@@ -1,6 +1,12 @@
 # ============================================================================
-# HiWiFi C526A (极路由X) — OpenWrt 24.10 + 完整 LuCI 中文 + 三频 WiFi
-#                              + 信道自由 + 功率解锁
+# HiWiFi C526A (极路由X) — OpenWrt 24.10 + LuCI 中文 + 三频 WiFi + 功率解锁
+#
+# 射频归属：
+#   &wifi0  = QCA4019 内置 2.4G (AHB)
+#   &wifi1  = QCA4019 内置 5G  (AHB)
+#   &pcie0 下的 mt7615 = 外挂 5G (PCIe)  ← 第三频
+#
+# ⚠️ IPQ4019 dtsi 只有 wifi0 和 wifi1，不存在 &wifi2
 #
 # 需要放在仓库根目录的文件：
 #   - 0001-Added-support-for-HIWIFI-c526a-24.10.patch
@@ -18,7 +24,7 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 350
 
     steps:
@@ -100,28 +106,17 @@ jobs:
           echo "补丁自检通过"
 
       # 8. 调试 DTS 节点名
-      - name: Debug DTS wifi nodes
+      - name: Debug DTS nodes
         run: |
           cd openwrt
           DTS=target/linux/ipq40xx/files-6.6/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts
-          echo "=== wifi 相关行 ==="
-          grep -n "wifi" "$DTS" || echo "NO wifi NODES FOUND"
+          echo "=== wifi / pcie 相关行 ==="
+          grep -n -E "wifi|pcie|mt76|mt7615" "$DTS" || echo "NONE"
           echo "=== DTS 末尾 60 行 ==="
           tail -60 "$DTS"
 
-      # 9. 调试 regdb 路径
-      - name: Debug regdb paths
-        run: |
-          cd openwrt
-          echo "=== db.txt ==="
-          find . -name "db.txt" -path "*wireless-regdb*" 2>/dev/null
-          echo "=== regulatory.db ==="
-          find . -name "regulatory.db*" 2>/dev/null | head -10
-          echo "=== 目录结构 ==="
-          ls -laR package/firmware/wireless-regdb 2>/dev/null | head -40 || echo "目录不存在"
-
-      # 10. 解锁功率限制（用 sed，无 heredoc）
-      - name: Unlock power limit in regdb.txt
+      # 9. 解锁功率限制（sed 修改 regdb，上限 30 dBm）
+      - name: Unlock power limit in regdb
         run: |
           set -e
           cd openwrt
@@ -132,7 +127,7 @@ jobs:
           fi
 
           if [ ! -f "$REGDB" ]; then
-            echo "未找到 regdb 文件，跳过功率解锁"
+            echo "未找到 regdb 文件，跳过"
             exit 0
           fi
 
@@ -148,52 +143,88 @@ jobs:
           echo "=== 修改后的功率行 ==="
           grep -E "2402 - 2472|5170 - 5250|5250 - 5330|5490 - 5710|5735 - 5835" "$REGDB" | head -20 || true
 
-      # 11. 启用 Wi-Fi（DTS 追加，无 heredoc）
-      - name: Enable Wi-Fi in DTS
+      # 10. 启用三频 WiFi（wifi0 + wifi1 + PCIe mt7615）
+      - name: Enable 3-band WiFi in DTS
         run: |
           set -e
           cd openwrt
           DTS=target/linux/ipq40xx/files-6.6/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts
 
-          NODE_2G="wifi0"
-          NODE_5G_LOW="wifi1"
-          NODE_5G_HIGH="wifi2"
-
-          if ! grep -q "^&${NODE_2G}" "$DTS"; then
+          # ---- 1) 追加 &wifi0（2.4G）和 &wifi1（5G 低频）----
+          if ! grep -q '^&wifi0' "$DTS"; then
             {
               echo ""
-              echo "&${NODE_2G} {"
+              echo '&wifi0 {'
               echo '    status = "okay";'
               echo '    qcom,ath10k-calibration-variant = "C526A";'
+              echo '    ieee80211-freq-limit = <2401000 2495000>;'
               echo '};'
               echo ""
-              echo "&${NODE_5G_LOW} {"
+              echo '&wifi1 {'
               echo '    status = "okay";'
               echo '    qcom,ath10k-calibration-variant = "C526A";'
               echo '    ieee80211-freq-limit = <5170000 5330000>;'
               echo '};'
-              echo ""
-              echo "&${NODE_5G_HIGH} {"
-              echo '    status = "okay";'
-              echo '    qcom,ath10k-calibration-variant = "C526A";'
-              echo '    ieee80211-freq-limit = <5490000 5835000>;'
-              echo '};'
             } >> "$DTS"
+            echo "已追加 &wifi0 和 &wifi1"
           else
-            echo "DTS 中已存在 &${NODE_2G}，跳过"
+            echo "DTS 中已存在 &wifi0，跳过追加"
           fi
 
-          echo "=== DTS 末尾 40 行 ==="
-          tail -40 "$DTS"
+          # ---- 2) 用 Python 脚本替换 &pcie0，加入 MT7615 子节点 ----
+          cat > /tmp/fix_pcie.py << 'PYEOF'
+import sys, re
 
-      # 12. 更新 feeds
+dts = sys.argv[1]
+with open(dts, 'r') as f:
+    content = f.read()
+
+new_pcie = """&pcie0 {
+    status = "okay";
+    perst-gpios = <&tlmm 38 GPIO_ACTIVE_LOW>;
+    wake-gpios = <&tlmm 50 GPIO_ACTIVE_LOW>;
+
+    bridge@0,0 {
+        reg = <0x00000000 0 0 0 0>;
+        #address-cells = <3>;
+        #size-cells = <2>;
+        ranges;
+
+        wifi@0,0 {
+            compatible = "mediatek,mt76";
+            reg = <0x0000 0 0 0 0>;
+            mediatek,mtd-eeprom = <&factory 0x0>;
+            ieee80211-freq-limit = <5490000 5835000>;
+        };
+    };
+};"""
+
+# 匹配原 &pcie0 整段（含 bridge），DOTALL 允许跨行
+pattern = re.compile(r'&pcie0\s*\{.*?\n\};', re.DOTALL)
+if pattern.search(content):
+    content = pattern.sub(new_pcie, content, count=1)
+    print("已替换 &pcie0 节点（加入 mt7615 子节点）")
+else:
+    content += "\n\n" + new_pcie + "\n"
+    print("未匹配原 &pcie0，改为追加新节点")
+
+with open(dts, 'w') as f:
+    f.write(content)
+PYEOF
+
+          python3 /tmp/fix_pcie.py "$DTS"
+
+          echo "=== DTS 末尾 60 行 ==="
+          tail -60 "$DTS"
+
+      # 11. 更新 feeds
       - name: Update and install feeds
         run: |
           cd openwrt
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      # 13. 移除 radicale3 依赖
+      # 12. 移除 radicale3 失效依赖
       - name: Remove radicale3 broken dependency
         run: |
           cd openwrt
@@ -204,7 +235,7 @@ jobs:
             sed -i 's/ +rpcd-mod-rad3-enc//g' package/feeds/luci/luci-app-radicale3/Makefile
           fi
 
-      # 14. 设置默认 LAN IP（printf 逐行写，无 heredoc）
+      # 13. 设置默认 LAN IP 为 10.0.0.5
       - name: Set default LAN IP
         run: |
           set -e
@@ -224,7 +255,7 @@ jobs:
           chmod +x files/etc/uci-defaults/99-custom-lan-ip
           cat files/etc/uci-defaults/99-custom-lan-ip
 
-      # 15. 设置无线默认配置（printf 逐行写，无 heredoc）
+      # 14. 设置无线默认配置（三频）
       - name: Set default wireless config
         run: |
           set -e
@@ -233,19 +264,19 @@ jobs:
           {
             printf '%s\n' '#!/bin/sh'
             printf '%s\n' ''
-            printf '%s\n' '# --- 2.4G ---'
+            printf '%s\n' '# 2.4G (wifi0)'
             printf '%s\n' "uci set wireless.radio0.country='00'"
             printf '%s\n' "uci set wireless.radio0.channel='6'"
             printf '%s\n' "uci set wireless.radio0.htmode='HT20'"
             printf '%s\n' "uci set wireless.radio0.disabled='0'"
             printf '%s\n' ''
-            printf '%s\n' '# --- 5G 低频 ---'
+            printf '%s\n' '# 5G 低频 (wifi1)'
             printf '%s\n' "uci set wireless.radio1.country='00'"
             printf '%s\n' "uci set wireless.radio1.channel='36'"
             printf '%s\n' "uci set wireless.radio1.htmode='VHT80'"
             printf '%s\n' "uci set wireless.radio1.disabled='0'"
             printf '%s\n' ''
-            printf '%s\n' '# --- 5G 高频 ---'
+            printf '%s\n' '# 5G 高频 (mt7615)'
             printf '%s\n' "uci set wireless.radio2.country='00'"
             printf '%s\n' "uci set wireless.radio2.channel='149'"
             printf '%s\n' "uci set wireless.radio2.htmode='VHT80'"
@@ -257,77 +288,88 @@ jobs:
           chmod +x files/etc/uci-defaults/98-custom-wireless
           cat files/etc/uci-defaults/98-custom-wireless
 
-      # 16. 加载 config
+      # 15. 加载 config，追加三频驱动与功率选项
       - name: Load config
         run: |
           set -e
           cd openwrt
           cp "$GITHUB_WORKSPACE/config-24.10-c526a" .config
 
+          # 功率解锁选项
           echo "CONFIG_ATH_USER_REGD=y" >> .config
           echo "CONFIG_CFG80211_CERTIFICATION_ONUS=y" >> .config
+
+          # 确保三频驱动全部选中（即使 config 文件里漏了也能补上）
+          echo "CONFIG_PACKAGE_kmod-ath10k-ct=y" >> .config
+          echo "CONFIG_PACKAGE_ath10k-firmware-qca4019-ct=y" >> .config
+          echo "CONFIG_PACKAGE_ath10k-firmware-qca4019-ct-htt=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-mt7615e=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-mt7615-firmware=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-mt7615-common=y" >> .config
 
           echo "=== 第一轮 defconfig ==="
           make defconfig
           echo "=== 第二轮 defconfig ==="
           make defconfig
 
-          echo "=== 检查 ATH_USER_REGD 是否保留 ==="
-          grep -E "ATH_USER_REGD|CFG80211_CERTIFICATION_ONUS" .config || echo "警告：上面两个选项未保留"
-
-          echo "=== 检查设备与 LuCI ==="
-          for opt in CONFIG_TARGET_ipq40xx_generic_DEVICE_hiwifi_c526a CONFIG_PACKAGE_luci; do
+          echo "=== 关键选项检查 ==="
+          for opt in \
+            CONFIG_TARGET_ipq40xx_generic_DEVICE_hiwifi_c526a \
+            CONFIG_PACKAGE_luci \
+            CONFIG_ATH_USER_REGD \
+            CONFIG_PACKAGE_kmod-ath10k-ct \
+            CONFIG_PACKAGE_kmod-mt7615e; do
             grep -qx "${opt}=y" .config && echo "  OK   ${opt}=y" || echo "  WARN ${opt} 未出现"
           done
 
           echo "config 行数: $(wc -l < .config)"
           exit 0
 
-      # 17. 下载软件包
+      # 16. 下载软件包源码
       - name: Download package sources
         run: |
           cd openwrt
           make -j$(nproc) download
 
-      # 18. 编译
+      # 17. 编译
       - name: Build
         run: |
           set -o pipefail
           cd openwrt
           make -j$(nproc) V=s 2>&1 | tee build.log
 
-      # 19. ccache 统计
+      # 18. ccache 统计
       - name: ccache stats
         if: always()
         run: ccache -s || true
 
-      # 20. 显示日志尾部
+      # 19. 显示日志尾部
       - name: Show tail of build log
         if: always()
         run: |
           cd openwrt
-          tail -120 build.log || true
+          tail -150 build.log || true
           echo "=== 错误行 ==="
           grep -n -i -E "error|failed to build" build.log | tail -60 || true
 
-      # 21. 断言固件产出
+      # 20. 断言固件产出
       - name: Assert firmware produced
         if: always()
         run: |
           cd openwrt
           ls -la bin/targets/ipq40xx/generic/ 2>/dev/null || true
           FAIL=0
-          grep -qx 'CONFIG_TARGET_ipq40xx_generic_DEVICE_hiwifi_c526a=y' .config || { echo "  MISS: 没有设备项"; FAIL=1; }
+          grep -qx 'CONFIG_TARGET_ipq40xx_generic_DEVICE_hiwifi_c526a=y' .config || { echo "  MISS 设备项"; FAIL=1; }
           SU=$(find bin/targets/ipq40xx/generic -maxdepth 1 -type f -name '*hiwifi_c526a*sysupgrade.bin' -print -quit 2>/dev/null || true)
-          [ -n "$SU" ] && [ -s "$SU" ] && echo "  OK sysupgrade=$SU" || { echo "  MISS: sysupgrade"; FAIL=1; }
+          [ -n "$SU" ] && [ -s "$SU" ] && echo "  OK sysupgrade=$SU" || { echo "  MISS sysupgrade"; FAIL=1; }
           FU=$(find bin/targets/ipq40xx/generic -maxdepth 1 -type f -name '*hiwifi_c526a*squashfs-factory.ubi' -print -quit 2>/dev/null || true)
-          [ -n "$FU" ] && [ -s "$FU" ] && echo "  OK factory.ubi=$FU" || { echo "  MISS: factory.ubi"; FAIL=1; }
+          [ -n "$FU" ] && [ -s "$FU" ] && echo "  OK factory.ubi=$FU" || { echo "  MISS factory.ubi"; FAIL=1; }
           IR=$(find bin/targets/ipq40xx/generic -maxdepth 1 -type f -name '*hiwifi_c526a*initramfs*' -print -quit 2>/dev/null || true)
-          [ -n "$IR" ] && [ -s "$IR" ] && echo "  OK initramfs=$IR" || { echo "  MISS: initramfs"; FAIL=1; }
-          [ "$FAIL" -eq 0 ] || { echo "产物断言失败"; tail -60 build.log; exit 1; }
+          [ -n "$IR" ] && [ -s "$IR" ] && echo "  OK initramfs=$IR" || { echo "  MISS initramfs"; FAIL=1; }
+          [ "$FAIL" -eq 0 ] || { echo "产物断言失败"; tail -80 build.log; exit 1; }
           echo "产物断言通过"
 
-      # 22. 收集产物
+      # 21. 收集产物
       - name: Prepare artifacts
         if: always()
         run: |
@@ -338,7 +380,7 @@ jobs:
             -exec cp {} "$GITHUB_WORKSPACE/output/" \; 2>/dev/null || true
           ls -la "$GITHUB_WORKSPACE/output/"
 
-      # 23. 上传固件
+      # 22. 上传固件
       - name: Upload firmware
         if: always()
         uses: actions/upload-artifact@v4
@@ -348,7 +390,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # 24. 上传日志
+      # 23. 上传日志
       - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
