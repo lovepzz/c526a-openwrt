@@ -1,12 +1,11 @@
 # ============================================================================
 # HiWiFi C526A (极路由X) — OpenWrt 24.10 + LuCI 中文 + 三频 WiFi + 功率解锁
 #
-# 射频归属：
-#   &wifi0           = QCA4019 内置 2.4G (AHB)
-#   &wifi1           = QCA4019 内置 5G  (AHB)
-#   &pcie0/wifi@0,0  = MT7615 外挂 5G  (PCIe)   ← 第三频
-#
-# ⚠️ IPQ4019 dtsi 只有 wifi0 和 wifi1，不存在 &wifi2
+# 稳定性设计：
+#   - 双频 (wifi0 2.4G + wifi1 5G) 为保底，一定工作
+#   - 第三频 (MT7615 PCIe) 为尽力而为，失败不影响其他
+#   - MT7615 相关操作全部带 || true 兜底
+#   - 无 heredoc、无 Python 内联，YAML 100% 可解析
 #
 # 需要放在仓库根目录的文件：
 #   - 0001-Added-support-for-HIWIFI-c526a-24.10.patch
@@ -137,6 +136,7 @@ jobs:
           if grep -q '^&wifi0' "$DTS"; then
             echo "DTS 中已存在 &wifi0，跳过"
           else
+            # 追加双频（保底，一定工作）
             echo "" >> "$DTS"
             echo "&wifi0 {" >> "$DTS"
             echo '    status = "okay";' >> "$DTS"
@@ -149,6 +149,9 @@ jobs:
             echo '    qcom,ath10k-calibration-variant = "C526A";' >> "$DTS"
             echo '    ieee80211-freq-limit = <5170000 5330000>;' >> "$DTS"
             echo "};" >> "$DTS"
+
+            # 追加第三频（PCIe MT7615），最简写法，避免与原有 &pcie0 冲突
+            # 使用 label 引用合并，DTC 会自动合并同名节点
             echo "" >> "$DTS"
             echo "&pcie0 {" >> "$DTS"
             echo "    bridge@0,0 {" >> "$DTS"
@@ -220,7 +223,7 @@ jobs:
           echo "uci set wireless.radio1.htmode='VHT80'" >> "$WFILE"
           echo "uci set wireless.radio1.disabled='0'" >> "$WFILE"
           echo "" >> "$WFILE"
-          echo "# 5G 高频" >> "$WFILE"
+          echo "# 5G 高频（MT7615）" >> "$WFILE"
           echo "uci set wireless.radio2.country='00'" >> "$WFILE"
           echo "uci set wireless.radio2.channel='149'" >> "$WFILE"
           echo "uci set wireless.radio2.htmode='VHT80'" >> "$WFILE"
@@ -232,31 +235,59 @@ jobs:
           echo "=== 无线默认配置 ==="
           cat "$WFILE"
 
-      - name: Load config
+      - name: Load config with fallback
         run: |
           set -e
           cd openwrt
           cp "$GITHUB_WORKSPACE/config-24.10-c526a" .config
+
+          # 功率解锁（一定保留）
           echo "CONFIG_ATH_USER_REGD=y" >> .config
           echo "CONFIG_CFG80211_CERTIFICATION_ONUS=y" >> .config
+
+          # 双频驱动（保底，必须保留）
           echo "CONFIG_PACKAGE_kmod-ath10k-ct=y" >> .config
           echo "CONFIG_PACKAGE_ath10k-firmware-qca4019-ct=y" >> .config
           echo "CONFIG_PACKAGE_ath10k-firmware-qca4019-ct-htt=y" >> .config
+
+          # 第三频驱动（尽力而为，包名不确定）
           echo "CONFIG_PACKAGE_kmod-mt7615e=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-mt7615-firmware=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-mt7615-common=y" >> .config
+
           echo "=== 第一轮 defconfig ==="
           make defconfig
           echo "=== 第二轮 defconfig ==="
           make defconfig
+
+          echo "=== 探测 MT7615 固件包真实名称 ==="
+          if grep -rq 'KernelPackage/mt7615-firmware' package/kernel/mt76/Makefile 2>/dev/null; then
+            echo "  OK: 存在 KernelPackage/mt7615-firmware"
+            if ! grep -qx 'CONFIG_PACKAGE_kmod-mt7615-firmware=y' .config; then
+              echo "CONFIG_PACKAGE_kmod-mt7615-firmware=y" >> .config
+            fi
+          fi
+          if grep -qE '^CONFIG_PACKAGE_mt7615-firmware=y' .config 2>/dev/null; then
+            echo "  OK: mt7615-firmware 已保留"
+          fi
+
+          # 再次收敛
+          make defconfig
+
           echo "=== 关键选项检查 ==="
-          for opt in CONFIG_TARGET_ipq40xx_generic_DEVICE_hiwifi_c526a CONFIG_PACKAGE_luci CONFIG_ATH_USER_REGD CONFIG_PACKAGE_kmod-ath10k-ct CONFIG_PACKAGE_kmod-mt7615e; do
+          for opt in \
+            CONFIG_TARGET_ipq40xx_generic_DEVICE_hiwifi_c526a \
+            CONFIG_PACKAGE_luci \
+            CONFIG_ATH_USER_REGD \
+            CONFIG_PACKAGE_kmod-ath10k-ct; do
             if grep -qx "${opt}=y" .config; then
               echo "  OK   ${opt}=y"
             else
               echo "  WARN ${opt} 未出现"
             fi
           done
+
+          echo "=== MT7615 相关选项（可能没有，不影响编译）==="
+          grep -E 'mt7615' .config || echo "  MT7615 未在 config 中，第三频将不可用"
+
           echo "config 行数: $(wc -l < .config)"
           exit 0
 
