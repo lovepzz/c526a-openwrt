@@ -2,20 +2,6 @@
 # HiWiFi C526A (极路由X) — OpenWrt 24.10 + 完整 LuCI 中文 + 三频 WiFi
 #                              + 信道自由 + 功率解锁
 #
-# 特点：
-#  1) 源码：openwrt/openwrt 分支 openwrt-24.10（内核 6.6，ipqess + DSA）
-#  2) 应用仓库根目录的 C526A 补丁
-#  3) 补丁默认关闭 Wi-Fi，workflow 自动追加 &wifi0/&wifi1/&wifi2 节点将其启用
-#  4) 为两个 5G 射频添加 ieee80211-freq-limit，解决信道无法更改、频段错乱
-#  5) 修改 wireless-regdb，解锁 2.4G/5G 功率限制，统一上限为 30 dBm
-#  6) 启用 CONFIG_ATH_USER_REGD，让驱动尊重用户空间监管设置
-#  7) 默认 LAN IP 改为 10.0.0.5（首次启动时通过 uci-defaults 自动应用）
-#  8) 首次启动自动固定各射频信道（radio0=6, radio1=36, radio2=149）
-#  9) country=00（世界监管域），配合已解锁的 regdb，信道和功率均放开
-# 10) 两个 5G 射频必须使用不同信道，否则其中一个无法正常工作（C526A 硬件特性）
-# 11) 不添加任何第三方 feed，全部使用官方 feed
-# 12) 不含 PassWall，不含旁路由模式
-#
 # 需要放在仓库根目录的文件：
 #   - 0001-Added-support-for-HIWIFI-c526a-24.10.patch
 #   - config-24.10-c526a
@@ -140,9 +126,6 @@ jobs:
 
       # ----------------------------------------------------------------------
       # 8. 调试：查看 DTS 中实际的 wifi 节点名（非常重要）
-      #    有些补丁用的是 &wifi0/&wifi1/&wifi2，
-      #    有些用的是 &wifi1/&wifi2/&wifi3，
-      #    需要先看清楚才能决定下面 Enable Wi-Fi 步骤怎么写
       # ----------------------------------------------------------------------
       - name: Debug - show DTS wifi nodes
         run: |
@@ -171,10 +154,7 @@ jobs:
 
       # ----------------------------------------------------------------------
       # 10. 解锁功率限制：修改 wireless-regdb 数据库
-      #     将 2.4G 与 5G 各频段的功率上限统一改为 30 dBm
-      #
-      #     注意：Python heredoc 的内容必须与上面的 shell 命令保持相同缩进，
-      #           否则 YAML 解析会失败。
+      #     改用 sed，避免 Python heredoc 缩进导致 YAML 解析失败
       # ----------------------------------------------------------------------
       - name: Unlock power limit in regdb.txt
         run: |
@@ -194,39 +174,19 @@ jobs:
           echo "=== 找到 regdb 文件: $REGDB ==="
           cp "$REGDB" "${REGDB}.bak"
 
-          python3 - "$REGDB" << 'PYEOF'
-import sys, re, os
-
-regdb_path = sys.argv[1]
-with open(regdb_path, 'r') as f:
-    content = f.read()
-
-# 2.4G 频段
-content = re.sub(r'(\(2402 - 2472 @ 40\),\s*\(N/A,)\s*\d+\)', r'\1 30)', content)
-# 5G 各频段
-content = re.sub(r'(\(5170 - 5250 @ 80\),\s*\(N/A,)\s*\d+\)', r'\1 30)', content)
-content = re.sub(r'(\(5250 - 5330 @ 80\),\s*\(N/A,)\s*\d+\)', r'\1 30)', content)
-content = re.sub(r'(\(5490 - 5710 @ 80\),\s*\(N/A,)\s*\d+\)', r'\1 30)', content)
-content = re.sub(r'(\(5735 - 5835 @ 80\),\s*\(N/A,)\s*\d+\)', r'\1 30)', content)
-
-with open(regdb_path, 'w') as f:
-    f.write(content)
-
-print("=== 已修改 " + regdb_path + "，功率上限统一为 30 dBm ===")
-PYEOF
+          # 用 sed 把 2.4G 与 5G 各频段功率上限统一改为 30 dBm
+          sed -i -E 's/\(2402 - 2472 @ 40\), \(N\/A, [0-9]+\)/(2402 - 2472 @ 40), (N\/A, 30)/g' "$REGDB"
+          sed -i -E 's/\(5170 - 5250 @ 80\), \(N\/A, [0-9]+\)/(5170 - 5250 @ 80), (N\/A, 30)/g' "$REGDB"
+          sed -i -E 's/\(5250 - 5330 @ 80\), \(N\/A, [0-9]+\)/(5250 - 5330 @ 80), (N\/A, 30)/g' "$REGDB"
+          sed -i -E 's/\(5490 - 5710 @ 80\), \(N\/A, [0-9]+\)/(5490 - 5710 @ 80), (N\/A, 30)/g' "$REGDB"
+          sed -i -E 's/\(5735 - 5835 @ 80\), \(N\/A, [0-9]+\)/(5735 - 5835 @ 80), (N\/A, 30)/g' "$REGDB"
 
           echo "=== 修改后的功率行（供核对）==="
           grep -E "2402 - 2472|5170 - 5250|5250 - 5330|5490 - 5710|5735 - 5835" "$REGDB" | head -20 || true
 
       # ----------------------------------------------------------------------
-      # 11. 启用 Wi-Fi 并配置 DTS（三频分离 + 信道自由）
-      #
-      #     重要：节点名必须与第 8 步调试输出一致！
-      #     IPQ4019 常见布局：
-      #       &wifi0 = 2.4G (QCA4019)
-      #       &wifi1 = 5G 低频 (QCA4019)
-      #       &wifi2 = 5G 高频 (MT7615 或第二 QCA4019)
-      #     如果第 8 步显示节点名是 &wifi1/&wifi2/&wifi3，请相应调整。
+      # 11. 启用 Wi-Fi 并配置 DTS
+      #     节点名请以第 8 步调试输出为准
       # ----------------------------------------------------------------------
       - name: Enable Wi-Fi in DTS
         run: |
@@ -234,7 +194,6 @@ PYEOF
           cd openwrt
           DTS=target/linux/ipq40xx/files-6.6/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts
 
-          # 用变量控制节点名，方便按调试结果替换
           NODE_2G="wifi0"
           NODE_5G_LOW="wifi1"
           NODE_5G_HIGH="wifi2"
@@ -243,20 +202,20 @@ PYEOF
             {
               echo ""
               echo "&${NODE_2G} {"
-              echo '	status = "okay";'
-              echo '	qcom,ath10k-calibration-variant = "C526A";'
+              echo '    status = "okay";'
+              echo '    qcom,ath10k-calibration-variant = "C526A";'
               echo '};'
               echo ""
               echo "&${NODE_5G_LOW} {"
-              echo '	status = "okay";'
-              echo '	qcom,ath10k-calibration-variant = "C526A";'
-              echo '	ieee80211-freq-limit = <5170000 5330000>;'
+              echo '    status = "okay";'
+              echo '    qcom,ath10k-calibration-variant = "C526A";'
+              echo '    ieee80211-freq-limit = <5170000 5330000>;'
               echo '};'
               echo ""
               echo "&${NODE_5G_HIGH} {"
-              echo '	status = "okay";'
-              echo '	qcom,ath10k-calibration-variant = "C526A";'
-              echo '	ieee80211-freq-limit = <5490000 5835000>;'
+              echo '    status = "okay";'
+              echo '    qcom,ath10k-calibration-variant = "C526A";'
+              echo '    ieee80211-freq-limit = <5490000 5835000>;'
               echo '};'
             } >> "$DTS"
           else
@@ -313,8 +272,7 @@ PYEOF
 
       # ----------------------------------------------------------------------
       # 15. 设置无线默认配置
-      #     country=00 为世界监管域，配合已解锁的 regdb，信道和功率均放开
-      #     两个 5G 射频必须使用不同信道，否则其中一个无法正常工作
+      #     heredoc 内容必须与 cat 保持相同缩进，否则 YAML 解析会失败
       # ----------------------------------------------------------------------
       - name: Set default wireless config
         run: |
@@ -322,29 +280,29 @@ PYEOF
           cd openwrt
           mkdir -p files/etc/uci-defaults
           cat > files/etc/uci-defaults/98-custom-wireless << 'EOF'
-#!/bin/sh
-
-# --- 2.4G 射频 ---
-uci set wireless.radio0.country='00'
-uci set wireless.radio0.channel='6'
-uci set wireless.radio0.htmode='HT20'
-uci set wireless.radio0.disabled='0'
-
-# --- 5G 低频射频（信道 36-64）---
-uci set wireless.radio1.country='00'
-uci set wireless.radio1.channel='36'
-uci set wireless.radio1.htmode='VHT80'
-uci set wireless.radio1.disabled='0'
-
-# --- 5G 高频射频（信道 100-165）---
-uci set wireless.radio2.country='00'
-uci set wireless.radio2.channel='149'
-uci set wireless.radio2.htmode='VHT80'
-uci set wireless.radio2.disabled='0'
-
-uci commit wireless
-exit 0
-EOF
+          #!/bin/sh
+          
+          # --- 2.4G 射频 ---
+          uci set wireless.radio0.country='00'
+          uci set wireless.radio0.channel='6'
+          uci set wireless.radio0.htmode='HT20'
+          uci set wireless.radio0.disabled='0'
+          
+          # --- 5G 低频射频（信道 36-64）---
+          uci set wireless.radio1.country='00'
+          uci set wireless.radio1.channel='36'
+          uci set wireless.radio1.htmode='VHT80'
+          uci set wireless.radio1.disabled='0'
+          
+          # --- 5G 高频射频（信道 100-165）---
+          uci set wireless.radio2.country='00'
+          uci set wireless.radio2.channel='149'
+          uci set wireless.radio2.htmode='VHT80'
+          uci set wireless.radio2.disabled='0'
+          
+          uci commit wireless
+          exit 0
+          EOF
           chmod +x files/etc/uci-defaults/98-custom-wireless
           echo "=== 无线默认配置 ==="
           cat files/etc/uci-defaults/98-custom-wireless
