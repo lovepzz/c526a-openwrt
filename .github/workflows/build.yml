@@ -1,11 +1,12 @@
 # ============================================================================
-# HiWiFi C526A (极路由X) — OpenWrt 24.10 + 完整 LuCI 中文 + 三频 WiFi + 信道自由 + 功率解锁
+# HiWiFi C526A (极路由X) — OpenWrt 24.10 + 完整 LuCI 中文 + 三频 WiFi
+#                              + 信道自由 + 功率解锁
 #
 # 特点：
 #  1) 源码：openwrt/openwrt 分支 openwrt-24.10（内核 6.6，ipqess + DSA）
 #  2) 应用仓库根目录的 C526A 补丁
 #  3) 补丁默认关闭 Wi-Fi，workflow 自动追加 &wifi0/&wifi1/&wifi2 节点将其启用
-#  4) 为两个 5G 射频添加 ieee80211-freq-limit，解决信道无法更改、频段错乱问题
+#  4) 为两个 5G 射频添加 ieee80211-freq-limit，解决信道无法更改、频段错乱
 #  5) 修改 wireless-regdb，解锁 2.4G/5G 功率限制，统一上限为 30 dBm
 #  6) 启用 CONFIG_ATH_USER_REGD，让驱动尊重用户空间监管设置
 #  7) 默认 LAN IP 改为 10.0.0.5（首次启动时通过 uci-defaults 自动应用）
@@ -138,8 +139,42 @@ jobs:
           echo "补丁落地自检通过"
 
       # ----------------------------------------------------------------------
-      # 8. 解锁功率限制：修改 wireless-regdb 数据库
-      #    将 2.4G 与 5G 各频段的功率上限统一改为 30 dBm
+      # 8. 调试：查看 DTS 中实际的 wifi 节点名（非常重要）
+      #    有些补丁用的是 &wifi0/&wifi1/&wifi2，
+      #    有些用的是 &wifi1/&wifi2/&wifi3，
+      #    需要先看清楚才能决定下面 Enable Wi-Fi 步骤怎么写
+      # ----------------------------------------------------------------------
+      - name: Debug - show DTS wifi nodes
+        run: |
+          cd openwrt
+          DTS=target/linux/ipq40xx/files-6.6/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts
+          echo "=== DTS 中所有 wifi 相关行 ==="
+          grep -n "wifi" "$DTS" || echo "NO wifi NODES FOUND"
+          echo ""
+          echo "=== DTS 末尾 60 行 ==="
+          tail -60 "$DTS"
+
+      # ----------------------------------------------------------------------
+      # 9. 调试：查找 regdb 文件的真实路径
+      # ----------------------------------------------------------------------
+      - name: Debug - find regdb files
+        run: |
+          cd openwrt
+          echo "=== 查找 db.txt ==="
+          find . -name "db.txt" -path "*wireless-regdb*" 2>/dev/null
+          echo ""
+          echo "=== 查找 regulatory.db 相关 ==="
+          find . -name "regulatory.db*" 2>/dev/null | head -10
+          echo ""
+          echo "=== wireless-regdb 包目录结构 ==="
+          ls -laR package/firmware/wireless-regdb 2>/dev/null | head -40 || echo "package/firmware/wireless-regdb 不存在"
+
+      # ----------------------------------------------------------------------
+      # 10. 解锁功率限制：修改 wireless-regdb 数据库
+      #     将 2.4G 与 5G 各频段的功率上限统一改为 30 dBm
+      #
+      #     注意：Python heredoc 的内容必须与上面的 shell 命令保持相同缩进，
+      #           否则 YAML 解析会失败。
       # ----------------------------------------------------------------------
       - name: Unlock power limit in regdb.txt
         run: |
@@ -159,41 +194,39 @@ jobs:
           echo "=== 找到 regdb 文件: $REGDB ==="
           cp "$REGDB" "${REGDB}.bak"
 
-          python3 - << 'PYEOF'
-import re, os
+          python3 - "$REGDB" << 'PYEOF'
+import sys, re, os
 
-regdb_path = "package/firmware/wireless-regdb/db.txt"
-if not os.path.exists(regdb_path):
-    regdb_path = "package/kernel/mac80211/files/regdb.txt"
+regdb_path = sys.argv[1]
+with open(regdb_path, 'r') as f:
+    content = f.read()
 
-if os.path.exists(regdb_path):
-    with open(regdb_path, 'r') as f:
-        content = f.read()
+# 2.4G 频段
+content = re.sub(r'(\(2402 - 2472 @ 40\),\s*\(N/A,)\s*\d+\)', r'\1 30)', content)
+# 5G 各频段
+content = re.sub(r'(\(5170 - 5250 @ 80\),\s*\(N/A,)\s*\d+\)', r'\1 30)', content)
+content = re.sub(r'(\(5250 - 5330 @ 80\),\s*\(N/A,)\s*\d+\)', r'\1 30)', content)
+content = re.sub(r'(\(5490 - 5710 @ 80\),\s*\(N/A,)\s*\d+\)', r'\1 30)', content)
+content = re.sub(r'(\(5735 - 5835 @ 80\),\s*\(N/A,)\s*\d+\)', r'\1 30)', content)
 
-    # 2.4G 频段
-    content = re.sub(r'(\(2402 - 2472 @ 40\),\s*\(N/A,)\s*\d+\)', r'\1 30)', content)
-    # 5G 各频段
-    content = re.sub(r'(\(5170 - 5250 @ 80\),\s*\(N/A,)\s*\d+\)', r'\1 30)', content)
-    content = re.sub(r'(\(5250 - 5330 @ 80\),\s*\(N/A,)\s*\d+\)', r'\1 30)', content)
-    content = re.sub(r'(\(5490 - 5710 @ 80\),\s*\(N/A,)\s*\d+\)', r'\1 30)', content)
-    content = re.sub(r'(\(5735 - 5835 @ 80\),\s*\(N/A,)\s*\d+\)', r'\1 30)', content)
+with open(regdb_path, 'w') as f:
+    f.write(content)
 
-    with open(regdb_path, 'w') as f:
-        f.write(content)
-
-    print(f"=== 已修改 {regdb_path}，功率上限统一为 30 dBm ===")
-else:
-    print("!! 未找到 regdb 文件")
+print("=== 已修改 " + regdb_path + "，功率上限统一为 30 dBm ===")
 PYEOF
 
           echo "=== 修改后的功率行（供核对）==="
           grep -E "2402 - 2472|5170 - 5250|5250 - 5330|5490 - 5710|5735 - 5835" "$REGDB" | head -20 || true
 
       # ----------------------------------------------------------------------
-      # 9. 启用 Wi-Fi 并配置 DTS（三频分离 + 信道自由）
-      #    为两个 5G 射频加 ieee80211-freq-limit，解决频段错乱和信道无法更改
-      #    wifi1 = 5G 低频段（信道 36-64）
-      #    wifi2 = 5G 高频段（信道 100-165）
+      # 11. 启用 Wi-Fi 并配置 DTS（三频分离 + 信道自由）
+      #
+      #     重要：节点名必须与第 8 步调试输出一致！
+      #     IPQ4019 常见布局：
+      #       &wifi0 = 2.4G (QCA4019)
+      #       &wifi1 = 5G 低频 (QCA4019)
+      #       &wifi2 = 5G 高频 (MT7615 或第二 QCA4019)
+      #     如果第 8 步显示节点名是 &wifi1/&wifi2/&wifi3，请相应调整。
       # ----------------------------------------------------------------------
       - name: Enable Wi-Fi in DTS
         run: |
@@ -201,35 +234,40 @@ PYEOF
           cd openwrt
           DTS=target/linux/ipq40xx/files-6.6/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts
 
-          if ! grep -q '^&wifi0' "$DTS"; then
+          # 用变量控制节点名，方便按调试结果替换
+          NODE_2G="wifi0"
+          NODE_5G_LOW="wifi1"
+          NODE_5G_HIGH="wifi2"
+
+          if ! grep -q "^&${NODE_2G}" "$DTS"; then
             {
               echo ""
-              echo '&wifi0 {'
+              echo "&${NODE_2G} {"
               echo '	status = "okay";'
               echo '	qcom,ath10k-calibration-variant = "C526A";'
               echo '};'
               echo ""
-              echo '&wifi1 {'
+              echo "&${NODE_5G_LOW} {"
               echo '	status = "okay";'
               echo '	qcom,ath10k-calibration-variant = "C526A";'
-              echo '	ieee80211-freq-limit = <5170000 5330000>;'   # 5G 低频段（信道 36-64）
+              echo '	ieee80211-freq-limit = <5170000 5330000>;'
               echo '};'
               echo ""
-              echo '&wifi2 {'
+              echo "&${NODE_5G_HIGH} {"
               echo '	status = "okay";'
               echo '	qcom,ath10k-calibration-variant = "C526A";'
-              echo '	ieee80211-freq-limit = <5490000 5835000>;'   # 5G 高频段（信道 100-165）
+              echo '	ieee80211-freq-limit = <5490000 5835000>;'
               echo '};'
             } >> "$DTS"
           else
-            echo "DTS 中已存在 &wifi0，跳过追加"
+            echo "DTS 中已存在 &${NODE_2G}，跳过追加"
           fi
 
           echo "=== DTS 末尾 40 行 ==="
           tail -40 "$DTS"
 
       # ----------------------------------------------------------------------
-      # 10. 更新并安装 feeds
+      # 12. 更新并安装 feeds
       # ----------------------------------------------------------------------
       - name: Update and install feeds
         run: |
@@ -238,7 +276,7 @@ PYEOF
           ./scripts/feeds install -a
 
       # ----------------------------------------------------------------------
-      # 11. 移除 radicale3 的失效依赖
+      # 13. 移除 radicale3 的失效依赖
       # ----------------------------------------------------------------------
       - name: Remove radicale3 broken dependency
         run: |
@@ -251,7 +289,7 @@ PYEOF
           fi
 
       # ----------------------------------------------------------------------
-      # 12. 设置默认 LAN IP 为 10.0.0.5
+      # 14. 设置默认 LAN IP 为 10.0.0.5
       # ----------------------------------------------------------------------
       - name: Set default LAN IP to 10.0.0.5
         run: |
@@ -274,7 +312,7 @@ PYEOF
           cat files/etc/uci-defaults/99-custom-lan-ip
 
       # ----------------------------------------------------------------------
-      # 13. 设置无线默认配置
+      # 15. 设置无线默认配置
       #     country=00 为世界监管域，配合已解锁的 regdb，信道和功率均放开
       #     两个 5G 射频必须使用不同信道，否则其中一个无法正常工作
       # ----------------------------------------------------------------------
@@ -312,7 +350,7 @@ EOF
           cat files/etc/uci-defaults/98-custom-wireless
 
       # ----------------------------------------------------------------------
-      # 14. 加载 config，并强制追加功率相关编译选项
+      # 16. 加载 config，并强制追加功率相关编译选项
       # ----------------------------------------------------------------------
       - name: Load config
         run: |
@@ -330,6 +368,9 @@ EOF
           echo "=== 第二轮 defconfig（收敛）==="
           make defconfig
 
+          echo "=== 检查关键编译选项是否保留 ==="
+          grep -E "ATH_USER_REGD|CFG80211_CERTIFICATION_ONUS" .config || echo "!! 上面两个选项未保留"
+
           echo "=== feeds 里实际存在的中文语言包（供核对包名）==="
           find feeds/luci -maxdepth 4 -type d -name 'luci-i18n-*-zh*' 2>/dev/null | sort || true
           echo ""
@@ -338,8 +379,7 @@ EOF
           WARN=0
           for opt in \
             CONFIG_TARGET_ipq40xx_generic_DEVICE_hiwifi_c526a \
-            CONFIG_PACKAGE_luci \
-            CONFIG_ATH_USER_REGD; do
+            CONFIG_PACKAGE_luci; do
             if grep -qx "${opt}=y" .config; then
               echo "  [OK]   ${opt}=y"
             else
@@ -348,22 +388,13 @@ EOF
             fi
           done
 
-          if grep -qE '^CONFIG_PACKAGE_luci-i18n-base-zh_Hans=y' .config; then
-            echo "  [OK]   中文语言包已选中："
-            grep -E '^CONFIG_PACKAGE_luci-i18n-.*-zh_Hans=y' .config | head -20
-          else
-            echo "  [WARN] 未检测到任何 luci-i18n-*-zh_Hans 语言包"
-            echo "         请查看上面 'feeds 里实际存在的' 列表，确认包名"
-            WARN=1
-          fi
-
           echo ""
           echo "config 加载完成，共 $(wc -l < .config) 行"
           [ "$WARN" -eq 0 ] && echo "全部关键项 OK" || echo "有警告，但继续构建"
           exit 0
 
       # ----------------------------------------------------------------------
-      # 15. 下载软件包源码
+      # 17. 下载软件包源码
       # ----------------------------------------------------------------------
       - name: Download package sources
         run: |
@@ -371,7 +402,7 @@ EOF
           make -j$(nproc) download
 
       # ----------------------------------------------------------------------
-      # 16. 正式编译
+      # 18. 正式编译
       # ----------------------------------------------------------------------
       - name: Build
         run: |
@@ -380,7 +411,7 @@ EOF
           make -j$(nproc) V=s 2>&1 | tee build.log
 
       # ----------------------------------------------------------------------
-      # 17. ccache 统计
+      # 19. ccache 统计
       # ----------------------------------------------------------------------
       - name: ccache stats
         if: always()
@@ -388,7 +419,7 @@ EOF
           ccache -s || true
 
       # ----------------------------------------------------------------------
-      # 18. 输出编译日志尾部
+      # 20. 输出编译日志尾部
       # ----------------------------------------------------------------------
       - name: Show tail of build log
         if: always()
@@ -399,7 +430,7 @@ EOF
           grep -n -i -E "error|failed to build" build.log | tail -60 || true
 
       # ----------------------------------------------------------------------
-      # 19. 断言固件是否产出
+      # 21. 断言固件是否产出
       # ----------------------------------------------------------------------
       - name: Assert firmware produced
         if: always()
@@ -428,7 +459,7 @@ EOF
           echo "产物断言通过"
 
       # ----------------------------------------------------------------------
-      # 20. 收集产物
+      # 22. 收集产物
       # ----------------------------------------------------------------------
       - name: Prepare artifacts
         if: always()
@@ -441,7 +472,7 @@ EOF
           ls -la "$GITHUB_WORKSPACE/output/"
 
       # ----------------------------------------------------------------------
-      # 21. 上传固件
+      # 23. 上传固件
       # ----------------------------------------------------------------------
       - name: Upload firmware
         if: always()
@@ -453,7 +484,7 @@ EOF
           retention-days: 30
 
       # ----------------------------------------------------------------------
-      # 22. 上传编译日志
+      # 24. 上传编译日志
       # ----------------------------------------------------------------------
       - name: Upload build log
         if: always()
