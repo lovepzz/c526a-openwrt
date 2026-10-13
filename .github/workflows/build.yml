@@ -1,20 +1,26 @@
 # ============================================================================
-# HiWiFi C526A (极路由X) — OpenWrt 24.10 + 完整 LuCI 中文 + 无线
+# HiWiFi C526A (极路由X) — OpenWrt 24.10 + 完整 LuCI 中文 + 三频 WiFi + 信道自由 + 功率解锁
 #
 # 特点：
 #  1) 源码：openwrt/openwrt 分支 openwrt-24.10（内核 6.6，ipqess + DSA）
 #  2) 应用仓库根目录的 C526A 补丁
-#  3) 补丁默认关闭 Wi-Fi，workflow 自动追加 &wifi0/&wifi1 节点将其启用
-#  4) 默认 LAN IP 改为 10.0.0.5（首次启动时通过 uci-defaults 自动应用）
-#  5) 不添加任何第三方 feed，全部使用官方 feed
-#  6) 不含 PassWall，不含旁路由模式
+#  3) 补丁默认关闭 Wi-Fi，workflow 自动追加 &wifi0/&wifi1/&wifi2 节点将其启用
+#  4) 为两个 5G 射频添加 ieee80211-freq-limit，解决信道无法更改、频段错乱问题
+#  5) 修改 wireless-regdb，解锁 2.4G/5G 功率限制，统一上限为 30 dBm
+#  6) 启用 CONFIG_ATH_USER_REGD，让驱动尊重用户空间监管设置
+#  7) 默认 LAN IP 改为 10.0.0.5（首次启动时通过 uci-defaults 自动应用）
+#  8) 首次启动自动固定各射频信道（radio0=6, radio1=36, radio2=149）
+#  9) country=00（世界监管域），配合已解锁的 regdb，信道和功率均放开
+# 10) 两个 5G 射频必须使用不同信道，否则其中一个无法正常工作（C526A 硬件特性）
+# 11) 不添加任何第三方 feed，全部使用官方 feed
+# 12) 不含 PassWall，不含旁路由模式
 #
 # 需要放在仓库根目录的文件：
 #   - 0001-Added-support-for-HIWIFI-c526a-24.10.patch
 #   - config-24.10-c526a
 # ============================================================================
 
-name: Build 极路由X (OpenWrt 24.10 + LuCI + WiFi + LAN 10.0.0.5)
+name: Build 极路由X (OpenWrt 24.10 + LuCI + 三频WiFi + 信道自由 + 功率解锁)
 
 on:
   workflow_dispatch:
@@ -29,9 +35,15 @@ jobs:
     timeout-minutes: 350
 
     steps:
+      # ----------------------------------------------------------------------
+      # 1. 检出仓库
+      # ----------------------------------------------------------------------
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ----------------------------------------------------------------------
+      # 2. 校验仓库必需文件是否齐全
+      # ----------------------------------------------------------------------
       - name: Verify repo files
         run: |
           ls -la
@@ -41,6 +53,9 @@ jobs:
             || { echo "!! 缺少 config-24.10-c526a"; exit 1; }
           echo OK
 
+      # ----------------------------------------------------------------------
+      # 3. 释放磁盘空间
+      # ----------------------------------------------------------------------
       - name: Free up disk space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
@@ -48,6 +63,9 @@ jobs:
           sudo apt-get clean
           df -h /
 
+      # ----------------------------------------------------------------------
+      # 4. 安装编译依赖
+      # ----------------------------------------------------------------------
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -56,7 +74,9 @@ jobs:
             python3-setuptools rsync swig unzip zlib1g-dev file wget ccache \
             libelf-dev python3-pyelftools
 
-      # ========== ccache 缓存 ==========
+      # ----------------------------------------------------------------------
+      # 5. ccache 缓存
+      # ----------------------------------------------------------------------
       - name: Setup ccache
         uses: actions/cache@v4
         with:
@@ -73,6 +93,9 @@ jobs:
           ccache -z
           ccache -s
 
+      # ----------------------------------------------------------------------
+      # 6. 克隆 OpenWrt 24.10 源码
+      # ----------------------------------------------------------------------
       - name: Clone OpenWrt 24.10
         run: |
           set -e
@@ -83,6 +106,9 @@ jobs:
           echo "=== 内核版本 ==="
           grep -E '^LINUX_VERSION-' include/kernel-version.mk || true
 
+      # ----------------------------------------------------------------------
+      # 7. 应用 C526A 设备支持补丁
+      # ----------------------------------------------------------------------
       - name: Apply C526A patch
         run: |
           set -e
@@ -111,13 +137,70 @@ jobs:
             || { echo "!! DTS 未落地"; exit 1; }
           echo "补丁落地自检通过"
 
+      # ----------------------------------------------------------------------
+      # 8. 解锁功率限制：修改 wireless-regdb 数据库
+      #    将 2.4G 与 5G 各频段的功率上限统一改为 30 dBm
+      # ----------------------------------------------------------------------
+      - name: Unlock power limit in regdb.txt
+        run: |
+          set -e
+          cd openwrt
+
+          REGDB="package/firmware/wireless-regdb/db.txt"
+          if [ ! -f "$REGDB" ]; then
+            REGDB="package/kernel/mac80211/files/regdb.txt"
+          fi
+
+          if [ ! -f "$REGDB" ]; then
+            echo "!! 未找到 regdb 文件，跳过功率解锁"
+            exit 0
+          fi
+
+          echo "=== 找到 regdb 文件: $REGDB ==="
+          cp "$REGDB" "${REGDB}.bak"
+
+          python3 - << 'PYEOF'
+import re, os
+
+regdb_path = "package/firmware/wireless-regdb/db.txt"
+if not os.path.exists(regdb_path):
+    regdb_path = "package/kernel/mac80211/files/regdb.txt"
+
+if os.path.exists(regdb_path):
+    with open(regdb_path, 'r') as f:
+        content = f.read()
+
+    # 2.4G 频段
+    content = re.sub(r'(\(2402 - 2472 @ 40\),\s*\(N/A,)\s*\d+\)', r'\1 30)', content)
+    # 5G 各频段
+    content = re.sub(r'(\(5170 - 5250 @ 80\),\s*\(N/A,)\s*\d+\)', r'\1 30)', content)
+    content = re.sub(r'(\(5250 - 5330 @ 80\),\s*\(N/A,)\s*\d+\)', r'\1 30)', content)
+    content = re.sub(r'(\(5490 - 5710 @ 80\),\s*\(N/A,)\s*\d+\)', r'\1 30)', content)
+    content = re.sub(r'(\(5735 - 5835 @ 80\),\s*\(N/A,)\s*\d+\)', r'\1 30)', content)
+
+    with open(regdb_path, 'w') as f:
+        f.write(content)
+
+    print(f"=== 已修改 {regdb_path}，功率上限统一为 30 dBm ===")
+else:
+    print("!! 未找到 regdb 文件")
+PYEOF
+
+          echo "=== 修改后的功率行（供核对）==="
+          grep -E "2402 - 2472|5170 - 5250|5250 - 5330|5490 - 5710|5735 - 5835" "$REGDB" | head -20 || true
+
+      # ----------------------------------------------------------------------
+      # 9. 启用 Wi-Fi 并配置 DTS（三频分离 + 信道自由）
+      #    为两个 5G 射频加 ieee80211-freq-limit，解决频段错乱和信道无法更改
+      #    wifi1 = 5G 低频段（信道 36-64）
+      #    wifi2 = 5G 高频段（信道 100-165）
+      # ----------------------------------------------------------------------
       - name: Enable Wi-Fi in DTS
         run: |
           set -e
           cd openwrt
           DTS=target/linux/ipq40xx/files-6.6/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts
 
-          # 只在尚未存在 &wifi0 节点时追加，避免重复
           if ! grep -q '^&wifi0' "$DTS"; then
             {
               echo ""
@@ -129,25 +212,37 @@ jobs:
               echo '&wifi1 {'
               echo '	status = "okay";'
               echo '	qcom,ath10k-calibration-variant = "C526A";'
+              echo '	ieee80211-freq-limit = <5170000 5330000>;'   # 5G 低频段（信道 36-64）
+              echo '};'
+              echo ""
+              echo '&wifi2 {'
+              echo '	status = "okay";'
+              echo '	qcom,ath10k-calibration-variant = "C526A";'
+              echo '	ieee80211-freq-limit = <5490000 5835000>;'   # 5G 高频段（信道 100-165）
               echo '};'
             } >> "$DTS"
           else
             echo "DTS 中已存在 &wifi0，跳过追加"
           fi
 
-          echo "=== DTS 末尾 30 行 ==="
-          tail -30 "$DTS"
+          echo "=== DTS 末尾 40 行 ==="
+          tail -40 "$DTS"
 
+      # ----------------------------------------------------------------------
+      # 10. 更新并安装 feeds
+      # ----------------------------------------------------------------------
       - name: Update and install feeds
         run: |
           cd openwrt
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
+      # ----------------------------------------------------------------------
+      # 11. 移除 radicale3 的失效依赖
+      # ----------------------------------------------------------------------
       - name: Remove radicale3 broken dependency
         run: |
           cd openwrt
-          # 去掉 luci-app-radicale3 对不存在的 rpcd-mod-rad3-enc 的依赖
           if [ -f feeds/luci/applications/luci-app-radicale3/Makefile ]; then
             sed -i 's/ +rpcd-mod-rad3-enc//g' feeds/luci/applications/luci-app-radicale3/Makefile
           fi
@@ -155,6 +250,9 @@ jobs:
             sed -i 's/ +rpcd-mod-rad3-enc//g' package/feeds/luci/luci-app-radicale3/Makefile
           fi
 
+      # ----------------------------------------------------------------------
+      # 12. 设置默认 LAN IP 为 10.0.0.5
+      # ----------------------------------------------------------------------
       - name: Set default LAN IP to 10.0.0.5
         run: |
           set -e
@@ -175,11 +273,58 @@ jobs:
           echo "=== 自定义 uci-defaults ==="
           cat files/etc/uci-defaults/99-custom-lan-ip
 
+      # ----------------------------------------------------------------------
+      # 13. 设置无线默认配置
+      #     country=00 为世界监管域，配合已解锁的 regdb，信道和功率均放开
+      #     两个 5G 射频必须使用不同信道，否则其中一个无法正常工作
+      # ----------------------------------------------------------------------
+      - name: Set default wireless config
+        run: |
+          set -e
+          cd openwrt
+          mkdir -p files/etc/uci-defaults
+          cat > files/etc/uci-defaults/98-custom-wireless << 'EOF'
+#!/bin/sh
+
+# --- 2.4G 射频 ---
+uci set wireless.radio0.country='00'
+uci set wireless.radio0.channel='6'
+uci set wireless.radio0.htmode='HT20'
+uci set wireless.radio0.disabled='0'
+
+# --- 5G 低频射频（信道 36-64）---
+uci set wireless.radio1.country='00'
+uci set wireless.radio1.channel='36'
+uci set wireless.radio1.htmode='VHT80'
+uci set wireless.radio1.disabled='0'
+
+# --- 5G 高频射频（信道 100-165）---
+uci set wireless.radio2.country='00'
+uci set wireless.radio2.channel='149'
+uci set wireless.radio2.htmode='VHT80'
+uci set wireless.radio2.disabled='0'
+
+uci commit wireless
+exit 0
+EOF
+          chmod +x files/etc/uci-defaults/98-custom-wireless
+          echo "=== 无线默认配置 ==="
+          cat files/etc/uci-defaults/98-custom-wireless
+
+      # ----------------------------------------------------------------------
+      # 14. 加载 config，并强制追加功率相关编译选项
+      # ----------------------------------------------------------------------
       - name: Load config
         run: |
           set -e
           cd openwrt
           cp "$GITHUB_WORKSPACE/config-24.10-c526a" .config
+
+          # 让 ath10k 尊重用户空间监管设置（而非死守 EEPROM）
+          echo "CONFIG_ATH_USER_REGD=y" >> .config
+          # 放宽 cfg80211 监管检查
+          echo "CONFIG_CFG80211_CERTIFICATION_ONUS=y" >> .config
+
           echo "=== 第一轮 defconfig ==="
           make defconfig
           echo "=== 第二轮 defconfig（收敛）==="
@@ -193,7 +338,8 @@ jobs:
           WARN=0
           for opt in \
             CONFIG_TARGET_ipq40xx_generic_DEVICE_hiwifi_c526a \
-            CONFIG_PACKAGE_luci ; do
+            CONFIG_PACKAGE_luci \
+            CONFIG_ATH_USER_REGD; do
             if grep -qx "${opt}=y" .config; then
               echo "  [OK]   ${opt}=y"
             else
@@ -216,22 +362,34 @@ jobs:
           [ "$WARN" -eq 0 ] && echo "全部关键项 OK" || echo "有警告，但继续构建"
           exit 0
 
+      # ----------------------------------------------------------------------
+      # 15. 下载软件包源码
+      # ----------------------------------------------------------------------
       - name: Download package sources
         run: |
           cd openwrt
           make -j$(nproc) download
 
+      # ----------------------------------------------------------------------
+      # 16. 正式编译
+      # ----------------------------------------------------------------------
       - name: Build
         run: |
           set -o pipefail
           cd openwrt
           make -j$(nproc) V=s 2>&1 | tee build.log
 
+      # ----------------------------------------------------------------------
+      # 17. ccache 统计
+      # ----------------------------------------------------------------------
       - name: ccache stats
         if: always()
         run: |
           ccache -s || true
 
+      # ----------------------------------------------------------------------
+      # 18. 输出编译日志尾部
+      # ----------------------------------------------------------------------
       - name: Show tail of build log
         if: always()
         run: |
@@ -240,6 +398,9 @@ jobs:
           echo "=== 错误行 ==="
           grep -n -i -E "error|failed to build" build.log | tail -60 || true
 
+      # ----------------------------------------------------------------------
+      # 19. 断言固件是否产出
+      # ----------------------------------------------------------------------
       - name: Assert firmware produced
         if: always()
         run: |
@@ -266,6 +427,9 @@ jobs:
           [ "$FAIL" -eq 0 ] || { echo "!! 产物断言失败"; tail -60 build.log; exit 1; }
           echo "产物断言通过"
 
+      # ----------------------------------------------------------------------
+      # 20. 收集产物
+      # ----------------------------------------------------------------------
       - name: Prepare artifacts
         if: always()
         run: |
@@ -276,15 +440,21 @@ jobs:
             -exec cp {} "$GITHUB_WORKSPACE/output/" \; 2>/dev/null || true
           ls -la "$GITHUB_WORKSPACE/output/"
 
+      # ----------------------------------------------------------------------
+      # 21. 上传固件
+      # ----------------------------------------------------------------------
       - name: Upload firmware
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: c526a-24.10-luci-wifi-lan10
+          name: c526a-24.10-luci-wifi-channel-free-power-unlock
           path: output/
           if-no-files-found: error
           retention-days: 30
 
+      # ----------------------------------------------------------------------
+      # 22. 上传编译日志
+      # ----------------------------------------------------------------------
       - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
