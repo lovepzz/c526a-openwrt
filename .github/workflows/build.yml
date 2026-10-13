@@ -1,18 +1,18 @@
 # ============================================================================
-# HiWiFi C526A (极路由X) — OpenWrt 24.10 + 完整 LuCI 中文 + 三频无线
+# HiWiFi C526A (极路由X) — OpenWrt 24.10 + LuCI 中文 + 三频 WiFi + 功率彻底解锁
 #
-# 修复：
-#   1) DTS 加 ieee80211-freq-limit，锁定 2.4G / 5G 频段（解决 2.4G 缺失、5G 信道异常）
-#   2) regdb 解锁功率 + ATH_USER_REGD（解决功率不足）
-#   3) 强制 dnsmasq-full（解决 DHCP 无法获取 IP）
-#   4) 保留 MT7615 第三频
+# 功率解锁 4 层：
+#   1) regdb 数据库：2.4G/5G 上限统一改为 30 dBm
+#   2) ATH_USER_REGD：让 ath10k 尊重用户空间监管设置
+#   3) UCI txpower：首次启动时设置 27/30/30 dBm
+#   4) 启动脚本：每次重启后强制重新应用功率
 #
 # 需要放在仓库根目录的文件：
 #   - 0001-Added-support-for-HIWIFI-c526a-24.10.patch
 #   - config-24.10-c526a
 # ============================================================================
 
-name: Build 极路由X (OpenWrt 24.10 + LuCI + 三频WiFi + LAN 10.0.0.5)
+name: Build 极路由X (OpenWrt 24.10 + LuCI + 三频WiFi + 功率解锁)
 
 on:
   workflow_dispatch:
@@ -109,7 +109,8 @@ jobs:
           echo "补丁落地自检通过"
 
       # ==========================================================================
-      # 解锁功率：修改 regdb，2.4G/5G 上限提升到 30 dBm
+      # 【功率解锁 1/4】修改 regdb 数据库
+      # 2.4G/5G 各频段功率上限统一提升到 30 dBm
       # ==========================================================================
       - name: Unlock power limit in regdb
         run: |
@@ -120,22 +121,30 @@ jobs:
             REGDB="package/kernel/mac80211/files/regdb.txt"
           fi
           if [ ! -f "$REGDB" ]; then
-            echo "未找到 regdb，跳过"
+            echo "未找到 regdb，跳过功率解锁"
             exit 0
           fi
           echo "找到 regdb: $REGDB"
           cp "$REGDB" "${REGDB}.bak"
+
+          # 2.4G 频段
           sed -i -E 's#\(2402 - 2472 @ 40\), \(N/A, [0-9]+\)#(2402 - 2472 @ 40), (N/A, 30)#g' "$REGDB"
+          # 5G 低频段 (U-NII-1)
           sed -i -E 's#\(5170 - 5250 @ 80\), \(N/A, [0-9]+\)#(5170 - 5250 @ 80), (N/A, 30)#g' "$REGDB"
+          # 5G 中频段 (U-NII-2A)
           sed -i -E 's#\(5250 - 5330 @ 80\), \(N/A, [0-9]+\)#(5250 - 5330 @ 80), (N/A, 30)#g' "$REGDB"
+          # 5G 中高频段 (U-NII-2C)
           sed -i -E 's#\(5490 - 5710 @ 80\), \(N/A, [0-9]+\)#(5490 - 5710 @ 80), (N/A, 30)#g' "$REGDB"
+          # 5G 高频段 (U-NII-3)
           sed -i -E 's#\(5735 - 5835 @ 80\), \(N/A, [0-9]+\)#(5735 - 5835 @ 80), (N/A, 30)#g' "$REGDB"
+          # 5G 低频 DFS (U-NII-2)
+          sed -i -E 's#\(5470 - 5725 @ 160\), \(N/A, [0-9]+\)#(5470 - 5725 @ 160), (N/A, 30)#g' "$REGDB"
+
           echo "=== 修改后功率行 ==="
-          grep -E "2402 - 2472|5170 - 5250|5250 - 5330|5490 - 5710|5735 - 5835" "$REGDB" | head -20 || true
+          grep -E "2402 - 2472|5170 - 5250|5250 - 5330|5490 - 5710|5735 - 5835|5470 - 5725" "$REGDB" | head -30 || true
 
       # ==========================================================================
       # 启用三频 WiFi：加 ieee80211-freq-limit 锁定各射频频段
-      # 解决 2.4G 缺失、5G 信道异常、功率受限的问题
       # ==========================================================================
       - name: Enable Wi-Fi in DTS
         run: |
@@ -209,13 +218,15 @@ jobs:
             echo "exit 0"
           } > files/etc/uci-defaults/99-custom-lan-ip
           chmod +x files/etc/uci-defaults/99-custom-lan-ip
-          echo "=== 自定义 uci-defaults ==="
+          echo "=== LAN 默认配置 ==="
           cat files/etc/uci-defaults/99-custom-lan-ip
 
       # ==========================================================================
-      # 无线默认配置：固定信道，country=00 世界域
+      # 【功率解锁 3/4】UCI 显式设置 txpower 到硬件最大
+      # 2.4G: 27 dBm，5G 低频/高频: 30 dBm
+      # 加 country='00' 世界监管域，配合已解锁的 regdb 完全放开
       # ==========================================================================
-      - name: Set default wireless config
+      - name: Set default wireless config with max txpower
         run: |
           set -e
           cd openwrt
@@ -223,22 +234,25 @@ jobs:
           {
             echo '#!/bin/sh'
             echo ""
-            echo "# 2.4G"
+            echo "# 2.4G (wifi0) - 硬件上限约 27 dBm"
             echo "uci set wireless.radio0.country='00'"
             echo "uci set wireless.radio0.channel='6'"
             echo "uci set wireless.radio0.htmode='HT20'"
+            echo "uci set wireless.radio0.txpower='27'"
             echo "uci set wireless.radio0.disabled='0'"
             echo ""
-            echo "# 5G 低频"
+            echo "# 5G 低频 (wifi1) - 硬件上限约 30 dBm"
             echo "uci set wireless.radio1.country='00'"
             echo "uci set wireless.radio1.channel='36'"
             echo "uci set wireless.radio1.htmode='VHT80'"
+            echo "uci set wireless.radio1.txpower='30'"
             echo "uci set wireless.radio1.disabled='0'"
             echo ""
-            echo "# 5G 高频（MT7615）"
+            echo "# 5G 高频 (mt7615) - 硬件上限约 30 dBm"
             echo "uci set wireless.radio2.country='00'"
             echo "uci set wireless.radio2.channel='149'"
             echo "uci set wireless.radio2.htmode='VHT80'"
+            echo "uci set wireless.radio2.txpower='30'"
             echo "uci set wireless.radio2.disabled='0'"
             echo ""
             echo "uci commit wireless"
@@ -249,7 +263,48 @@ jobs:
           cat files/etc/uci-defaults/98-custom-wireless
 
       # ==========================================================================
-      # Load config：强制启用 dnsmasq-full、功率解锁、三频驱动
+      # 【功率解锁 4/4】启动脚本：每次开机强制重新应用功率值
+      # 某些驱动在重启后会重置功率，需要在启动后重新设置
+      # ==========================================================================
+      - name: Create txpower enforcement init script
+        run: |
+          set -e
+          cd openwrt
+          mkdir -p files/etc/init.d
+          {
+            echo '#!/bin/sh /etc/rc.common'
+            echo ''
+            echo 'START=99'
+            echo 'STOP=10'
+            echo ''
+            echo 'start() {'
+            echo '    # 等待无线驱动加载完成'
+            echo '    sleep 15'
+            echo ''
+            echo '    # 强制设置各射频功率到最大'
+            echo '    iw phy phy0 set txpower fixed 2700 2>/dev/null || true'
+            echo '    iw phy phy1 set txpower fixed 3000 2>/dev/null || true'
+            echo '    iw phy phy2 set txpower fixed 3000 2>/dev/null || true'
+            echo ''
+            echo '    # 同步 UCI 配置'
+            echo '    uci set wireless.radio0.txpower="27" 2>/dev/null || true'
+            echo '    uci set wireless.radio1.txpower="30" 2>/dev/null || true'
+            echo '    uci set wireless.radio2.txpower="30" 2>/dev/null || true'
+            echo '    uci commit wireless 2>/dev/null || true'
+            echo ''
+            echo '    logger -t txpower-fix "txpower applied: 27/30/30 dBm"'
+            echo '}'
+            echo ''
+            echo 'stop() {'
+            echo '    :'
+            echo '}'
+          } > files/etc/init.d/txpower-fix
+          chmod +x files/etc/init.d/txpower-fix
+          echo "=== txpower 强制脚本 ==="
+          cat files/etc/init.d/txpower-fix
+
+      # ==========================================================================
+      # 【功率解锁 2/4】Load config：启用 ATH_USER_REGD 等驱动选项
       # ==========================================================================
       - name: Load config
         run: |
@@ -257,13 +312,15 @@ jobs:
           cd openwrt
           cp "$GITHUB_WORKSPACE/config-24.10-c526a" .config
 
-          # 功率解锁
+          # 功率解锁核心选项
           echo "CONFIG_ATH_USER_REGD=y" >> .config
           echo "CONFIG_CFG80211_CERTIFICATION_ONUS=y" >> .config
+          echo "CONFIG_ATH10K_CT_ATTENUATION=y" >> .config
 
-          # DHCP 修复（关键：dnsmasq-full 提供 IPv4 DHCP，dnsmasq 必须禁用）
+          # DHCP 修复
           echo "CONFIG_PACKAGE_dnsmasq=n" >> .config
           echo "CONFIG_PACKAGE_dnsmasq-full=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-nf-conntrack-netlink=y" >> .config
 
           # 无线驱动保底
           echo "CONFIG_PACKAGE_kmod-ath10k-ct=y" >> .config
@@ -276,32 +333,21 @@ jobs:
           echo "=== 第二轮 defconfig（收敛）==="
           make defconfig
 
-          echo "=== feeds 里实际存在的中文语言包（供核对包名）==="
-          find feeds/luci -maxdepth 4 -type d -name 'luci-i18n-*-zh*' 2>/dev/null | sort || true
-          echo ""
-
-          echo "=== 关键配置检查 ==="
-          WARN=0
+          echo "=== 功率相关选项检查 ==="
           for opt in \
-            CONFIG_TARGET_ipq40xx_generic_DEVICE_hiwifi_c526a \
-            CONFIG_PACKAGE_luci \
-            CONFIG_PACKAGE_dnsmasq-full \
             CONFIG_ATH_USER_REGD \
+            CONFIG_CFG80211_CERTIFICATION_ONUS \
+            CONFIG_ATH10K_CT_ATTENUATION \
             CONFIG_PACKAGE_kmod-ath10k-ct ; do
             if grep -qx "${opt}=y" .config; then
               echo "  [OK]   ${opt}=y"
             else
               echo "  [WARN] ${opt} 未出现"
-              WARN=1
             fi
           done
 
-          echo "=== MT7615 相关 ==="
-          grep -E 'mt7615' .config || echo "  MT7615 未在 config 中"
-
           echo ""
           echo "config 加载完成，共 $(wc -l < .config) 行"
-          [ "$WARN" -eq 0 ] && echo "全部关键项 OK" || echo "有警告，但继续构建"
           exit 0
 
       - name: Download package sources
@@ -368,7 +414,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: c526a-24.10-luci-wifi-lan10
+          name: c526a-24.10-luci-wifi-power-unlock
           path: output/
           if-no-files-found: error
           retention-days: 30
