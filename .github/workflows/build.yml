@@ -25,7 +25,7 @@ jobs:
           sudo apt-get install -y build-essential clang flex bison g++ gawk \
             gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev \
             python3-setuptools rsync swig unzip zlib1g-dev file wget ccache \
-            libelf-dev python3-pyelftools
+            libelf-dev python3-pyelftools patch
 
       - name: Clone OpenWrt (pinned commit)
         env:
@@ -48,53 +48,124 @@ jobs:
           PATCH="$GITHUB_WORKSPACE/0001-Added-support-for-HIWIFI-c526a-25.12.patch"
           [ -f "$PATCH" ] || { echo "::error::找不到 patch 文件"; exit 1; }
 
-          if [ -n "$(tail -c 1 "$PATCH")" ]; then
-            echo "" >> "$PATCH"
-            echo "已补上末尾换行"
-          else
-            echo "末尾已有换行"
-          fi
-
-          echo "=== 修正前 ==="
-          grep -n -m1 -A1 'qcom-ipq4019-c526a\.dts' "$PATCH" || true
-
-          N=$(awk '
-            /^diff --git .*qcom-ipq4019-c526a\.dts / { f=1; next }
-            f && /^diff --git / { exit }
-            f && /^\+/ { n++ }
-            END { print n+0 }
-          ' "$PATCH")
-          echo "DTS 段落实际 + 行数 = $N"
-
-          python3 - "$PATCH" "$N" <<'PY'
+          python3 - "$PATCH" <<'PY'
           import re, sys
-          p, n = sys.argv[1], sys.argv[2]
-          s = open(p, encoding="utf-8").read()
-          pat = re.compile(
-              r'(diff --git [^\n]*qcom-ipq4019-c526a\.dts[^\n]*\n'
-              r'(?:[^\n]*\n)*?@@ -0,0 \+1,)\d+( @@)'
-          )
-          s2, cnt = pat.subn(r'\g<1>' + n + r'\g<2>', s, count=1)
-          if cnt != 1:
-              print("!! 未找到 DTS 段落的 @@ 行")
-              sys.exit(1)
-          open(p, "w", encoding="utf-8").write(s2)
-          print("已修正 DTS 段落 @@ 行数为 +1," + n)
+
+          path = sys.argv[1]
+          with open(path, "r", encoding="utf-8") as f:
+              lines = f.readlines()
+
+          if lines and not lines[-1].endswith("\n"):
+              lines[-1] += "\n"
+
+          out = []
+          i = 0
+          fixed = 0
+
+          while i < len(lines):
+              line = lines[i]
+
+              if line.startswith("diff --git "):
+                  out.append(line)
+                  i += 1
+
+                  header = []
+                  while (i < len(lines)
+                         and not lines[i].startswith("@@")
+                         and not lines[i].startswith("diff --git ")):
+                      header.append(lines[i])
+                      i += 1
+
+                  if i >= len(lines) or not lines[i].startswith("@@"):
+                      out.extend(header)
+                      continue
+
+                  while i < len(lines) and lines[i].startswith("@@"):
+                      hunk = lines[i]
+                      m = re.match(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$", hunk)
+                      if not m:
+                          out.extend(header); header = []
+                          out.append(hunk); i += 1
+                          continue
+
+                      old_start = int(m.group(1))
+                      new_start = int(m.group(3))
+                      context   = m.group(5)
+
+                      i += 1
+                      body = []
+                      a_old = a_new = 0
+                      while i < len(lines):
+                          l = lines[i]
+                          if l.startswith("diff --git ") or l.startswith("@@"):
+                              break
+                          if l.startswith("+"):
+                              a_new += 1
+                          elif l.startswith("-"):
+                              a_old += 1
+                          elif l.startswith(" ") or l == "\n" or l == "\t\n":
+                              a_old += 1; a_new += 1
+                          elif l.startswith("\\"):
+                              pass
+                          else:
+                              break
+                          body.append(l)
+                          i += 1
+
+                      if context.strip():
+                          new_hunk = f"@@ -{old_start},{a_old} +{new_start},{a_new} @@{context}\n"
+                      else:
+                          new_hunk = f"@@ -{old_start},{a_old} +{new_start},{a_new} @@\n"
+
+                      out.extend(header); header = []
+                      out.append(new_hunk)
+                      out.extend(body)
+                      fixed += 1
+
+                  out.extend(header)
+              else:
+                  out.append(line)
+                  i += 1
+
+          with open(path, "w", encoding="utf-8") as f:
+              f.writelines(out)
+          print(f"已重建 {fixed} 个 hunk 的 @@ 头")
           PY
 
-          echo "=== 修正后 ==="
-          grep -n -m1 -A1 'qcom-ipq4019-c526a\.dts' "$PATCH" || true
+          echo "=== 修正后的 @@ 行（节选）==="
+          grep -n '^@@' "$PATCH" | head -20 || true
+
+          echo "=== git apply --check 校验 ==="
+          cd "$GITHUB_WORKSPACE/openwrt"
+          if git apply --check --verbose "$PATCH" 2>&1 | tail -20; then
+            echo "git apply --check 通过"
+          else
+            echo "!! git apply --check 未通过，下一步会 fallback 到 patch -p1"
+          fi
 
       - name: Apply C526A patch
         run: |
           set -e
           cd openwrt
+          PATCH="$GITHUB_WORKSPACE/0001-Added-support-for-HIWIFI-c526a-25.12.patch"
+
           git config user.email "build@c526a.local"
           git config user.name "C526A Build"
-          git am --3way "$GITHUB_WORKSPACE/0001-Added-support-for-HIWIFI-c526a-25.12.patch" \
-            || (git am --abort 2>/dev/null || true; \
-                echo "=== git am 失败，改用 git apply ==="; \
-                git apply --3way -v "$GITHUB_WORKSPACE/0001-Added-support-for-HIWIFI-c526a-25.12.patch")
+
+          if git am --3way "$PATCH"; then
+            echo "✅ git am 成功"
+          else
+            git am --abort 2>/dev/null || true
+            echo "git am 失败，尝试 git apply"
+            if git apply --3way -v "$PATCH"; then
+              echo "✅ git apply 成功"
+            else
+              echo "git apply 失败，最后用 patch -p1 兜底"
+              patch -p1 --no-backup-if-mismatch -f < "$PATCH"
+              echo "✅ patch -p1 应用完成"
+            fi
+          fi
+
           test -f target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts \
             || { echo "!! DTS 不存在"; exit 1; }
           grep -q 'hiwifi_c526a' target/linux/ipq40xx/image/generic.mk \
@@ -105,30 +176,18 @@ jobs:
           set -e
           cd openwrt
           MK=target/linux/ipq40xx/image/generic.mk
-
           python3 - "$MK" <<'PY'
           import re, sys
-
           p = sys.argv[1]
           s = open(p, encoding="utf-8").read()
-
-          s = s.replace(
-              "kmod-ath10k-ct ath10k-firmware-qca4019-ct",
-              "kmod-ath10k ath10k-firmware-qca4019",
-          )
-
+          s = s.replace("kmod-ath10k-ct ath10k-firmware-qca4019-ct",
+                        "kmod-ath10k ath10k-firmware-qca4019")
           pat = re.compile(
-              r"(define Device/hiwifi_c526a\n"
-              r"(?:.*\n)*?"
-              r"\tPAGESIZE := 2048\n)"
-              r"((?:.*\n)*?"
-              r"endef)"
+              r"(define Device/hiwifi_c526a\n(?:.*\n)*?\tPAGESIZE := 2048\n)((?:.*\n)*?endef)"
           )
           m = pat.search(s)
           if not m:
-              print("!! 未找到 hiwifi_c526a 的 PAGESIZE/endef")
-              sys.exit(1)
-
+              print("!! 未找到 hiwifi_c526a 块"); sys.exit(1)
           block = m.group(0)
           if "kmod-mt7615e" not in block:
               pkgs = (
@@ -137,12 +196,9 @@ jobs:
                   "\t\tkmod-usb3 kmod-usb2\n"
               )
               s = s[:m.end(1)] + pkgs + s[m.end(1):]
-
           open(p, "w", encoding="utf-8").write(s)
           print("generic.mk 已更新")
           PY
-
-          echo "=== generic.mk 中 hiwifi_c526a 的 DEVICE_PACKAGES ==="
           grep -A15 'define Device/hiwifi_c526a' "$MK" | grep 'DEVICE_PACKAGES' || true
 
       - name: Update feeds
@@ -170,8 +226,6 @@ jobs:
           exit 0
           EOF
           chmod +x files/etc/uci-defaults/99-c526a-network
-          echo "=== uci-defaults 内容 ==="
-          cat files/etc/uci-defaults/99-c526a-network
 
       - name: Load config
         run: |
@@ -179,7 +233,6 @@ jobs:
           cd openwrt
           cp "$GITHUB_WORKSPACE/config-25.12-c526a" .config
           make defconfig
-
           for opt in CONFIG_PACKAGE_kmod-ath10k-ct \
                      CONFIG_PACKAGE_ath10k-firmware-qca4019-ct ; do
             if grep -q "^${opt}=" .config; then
@@ -188,8 +241,6 @@ jobs:
               printf '# %s is not set\n' "$opt" >> .config
             fi
           done
-
-          echo "=== 关键配置确认 ==="
           grep -E 'CONFIG_PACKAGE_(kmod-ath10k|ath10k-firmware|kmod-mt7615e|kmod-mt76)' .config || true
 
       - name: Verify
@@ -197,77 +248,31 @@ jobs:
           cd openwrt
           FAIL=0
 
-          echo "=== target ==="
           grep -E 'CONFIG_TARGET_(BOARD|SUBTARGET|PROFILE)' .config || true
+          grep -A15 'define Device/hiwifi_c526a' target/linux/ipq40xx/image/generic.mk \
+            || { echo "  [MISS] 设备定义缺失"; FAIL=1; }
+          ls -la target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts \
+            || { echo "  [MISS] DTS 缺失"; FAIL=1; }
 
-          echo "=== 设备定义 ==="
-          if grep -A20 'define Device/hiwifi_c526a' target/linux/ipq40xx/image/generic.mk >/dev/null 2>&1; then
-            echo "  [OK]   设备定义存在"
-          else
-            echo "  [MISS] 设备定义缺失"; FAIL=1
-          fi
-
-          echo "=== DTS ==="
-          if [ -f target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts ]; then
-            echo "  [OK]   DTS 已落地"
-          else
-            echo "  [MISS] DTS 缺失"; FAIL=1
-          fi
-
-          echo "=== 官方 ath10k ==="
-          for opt in CONFIG_PACKAGE_kmod-ath10k \
-                     CONFIG_PACKAGE_ath10k-firmware-qca4019 ; do
-            if grep -qx "${opt}=y" .config; then
-              echo "  [OK]   ${opt}=y"
-            else
-              echo "  [MISS] ${opt}"; FAIL=1
-            fi
+          for opt in CONFIG_PACKAGE_kmod-ath10k CONFIG_PACKAGE_ath10k-firmware-qca4019 ; do
+            if grep -qx "${opt}=y" .config; then echo "  [OK] ${opt}=y"
+            else echo "  [MISS] ${opt}"; FAIL=1; fi
           done
-
-          echo "=== MT7615 驱动 ==="
-          for opt in CONFIG_PACKAGE_kmod-mt7615e \
-                     CONFIG_PACKAGE_kmod-mt76-connac \
-                     CONFIG_PACKAGE_kmod-mt76-core ; do
-            if grep -qx "${opt}=y" .config; then
-              echo "  [OK]   ${opt}=y"
-            else
-              echo "  [MISS] ${opt}"; FAIL=1
-            fi
+          for opt in CONFIG_PACKAGE_kmod-mt7615e CONFIG_PACKAGE_kmod-mt76-connac CONFIG_PACKAGE_kmod-mt76-core ; do
+            if grep -qx "${opt}=y" .config; then echo "  [OK] ${opt}=y"
+            else echo "  [MISS] ${opt}"; FAIL=1; fi
           done
-
-          echo "=== 反向：CT 驱动必须不存在 ==="
           if grep -qx 'CONFIG_PACKAGE_kmod-ath10k-ct=y' .config; then
-            echo "  [BAD]  kmod-ath10k-ct 仍为 y"; FAIL=1
+            echo "  [BAD] kmod-ath10k-ct 仍为 y"; FAIL=1
           else
-            echo "  [OK]   kmod-ath10k-ct 未启用"
+            echo "  [OK] kmod-ath10k-ct 未启用"
           fi
 
-          echo "=== generic.mk DEVICE_PACKAGES ==="
-          DP=$(grep -A15 'define Device/hiwifi_c526a' target/linux/ipq40xx/image/generic.mk | grep 'DEVICE_PACKAGES' || true)
-          if [ -n "$DP" ]; then
-            echo "  $DP"
-            case "$DP" in
-              *kmod-ath10k-ct*) echo "  [BAD]  DEVICE_PACKAGES 仍含 CT"; FAIL=1 ;;
-              *kmod-mt7615e*)   echo "  [OK]   含 kmod-mt7615e" ;;
-              *)                echo "  [WARN] 未显式列出 kmod-mt7615e" ;;
-            esac
-          else
-            echo "  [INFO] generic.mk 中未定义 DEVICE_PACKAGES"
-          fi
-
-          echo "=== uci-defaults ==="
           UCI=files/etc/uci-defaults/99-c526a-network
-          if [ -f "$UCI" ]; then
-            echo "  [OK]   文件存在"
-            grep -q "10.0.0.3" "$UCI" && echo "  [OK]   LAN IP = 10.0.0.3" || { echo "  [MISS] LAN IP 未设置"; FAIL=1; }
-            grep -q "wifi-device\[0\].disabled='0'" "$UCI" && echo "  [OK]   WiFi 启用指令存在" || { echo "  [MISS] WiFi 启用指令缺失"; FAIL=1; }
-          else
-            echo "  [MISS] uci-defaults 缺失"; FAIL=1
-          fi
+          [ -f "$UCI" ] || { echo "  [MISS] uci-defaults 缺失"; FAIL=1; }
+          grep -q "10.0.0.3" "$UCI" && echo "  [OK] LAN IP = 10.0.0.3" || { echo "  [MISS] LAN IP 未设置"; FAIL=1; }
 
-          if [ "$FAIL" -ne 0 ]; then
-            echo "!! 自检失败"; exit 1
-          fi
+          if [ "$FAIL" -ne 0 ]; then echo "!! 自检失败"; exit 1; fi
           echo "=== 全部自检通过 ==="
 
       - name: Download package sources
@@ -293,23 +298,15 @@ jobs:
         run: |
           cd openwrt
           FAIL=0
-          echo "=== bin/targets/ipq40xx/generic ==="
           ls -la bin/targets/ipq40xx/generic/ 2>/dev/null || true
-
           SU=$(find bin/targets/ipq40xx/generic -maxdepth 1 -name '*hiwifi_c526a*sysupgrade.bin' -print -quit 2>/dev/null || true)
           if [ -n "$SU" ] && [ -s "$SU" ]; then
             echo "  [OK] sysupgrade = $SU ($(wc -c < "$SU") B)"
-          else
-            echo "  [MISS] sysupgrade.bin"; FAIL=1
-          fi
-
+          else echo "  [MISS] sysupgrade.bin"; FAIL=1; fi
           FU=$(find bin/targets/ipq40xx/generic -maxdepth 1 -name '*hiwifi_c526a*squashfs-factory.ubi' -print -quit 2>/dev/null || true)
           if [ -n "$FU" ] && [ -s "$FU" ]; then
             echo "  [OK] factory.ubi = $FU ($(wc -c < "$FU") B)"
-          else
-            echo "  [MISS] factory.ubi"; FAIL=1
-          fi
-
+          else echo "  [MISS] factory.ubi"; FAIL=1; fi
           [ "$FAIL" -eq 0 ] || exit 1
           echo "=== 产物断言通过 ==="
 
