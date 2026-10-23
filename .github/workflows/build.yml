@@ -1,4 +1,4 @@
-name: Build C526A (OpenWrt 25.12 + ipqess + ath10k + WiFi)
+name: Build xin C526A (OpenWrt 25.12 + ipqess + ath10k + WiFi)
 
 on:
   workflow_dispatch:
@@ -65,6 +65,8 @@ jobs:
             sed -i 's/kmod-ath10k-ct ath10k-firmware-qca4019-ct/kmod-ath10k ath10k-firmware-qca4019 ath10k-board-qca4019/g' "$MK"
             echo "已替换 DEVICE_PACKAGES 中的 CT 包为官方包"
           fi
+          echo "=== generic.mk 中的 DEVICE_PACKAGES ==="
+          grep -A12 'define Device/hiwifi_c526a' "$MK" | grep 'DEVICE_PACKAGES' || true
 
       - name: Update feeds
         run: |
@@ -93,6 +95,8 @@ jobs:
           exit 0
           EOF
           chmod +x files/etc/uci-defaults/99-c526a-network
+          echo "=== uci-defaults 内容 ==="
+          cat files/etc/uci-defaults/99-c526a-network
 
       - name: Load config
         run: |
@@ -102,8 +106,7 @@ jobs:
           make defconfig
 
           # ================================================================
-          # 后备保险：即使 CONFIG_TARGET_DEVICE_PACKAGES 因版本差异未生效，
-          # 也在最后一次 defconfig 之后强制写死 CT 包为 n，且不再 defconfig。
+          # 后备保险：强制禁用 CT 驱动（defconfig 之后写死，不再 defconfig）
           # ================================================================
           echo "=== 后备：强制禁用 CT 驱动 ==="
           for opt in CONFIG_PACKAGE_kmod-ath10k-ct \
@@ -116,7 +119,9 @@ jobs:
           done
 
           echo "=== 关键配置确认 ==="
-          grep -E 'CONFIG_TARGET_DEVICE_PACKAGES_ipq40xx|CONFIG_PACKAGE_(kmod-ath10k|ath10k-firmware|opkg)' .config || true
+          grep -E 'CONFIG_TARGET_ipq40xx|CONFIG_PACKAGE_(kmod-ath10k|ath10k-firmware|opkg)' .config || true
+          echo "=== generic.mk 中的 DEVICE_PACKAGES（构建实际使用的值）==="
+          grep -A12 'define Device/hiwifi_c526a' target/linux/ipq40xx/image/generic.mk | grep 'DEVICE_PACKAGES' || true
 
       - name: Verify
         run: |
@@ -127,50 +132,78 @@ jobs:
           grep -E 'CONFIG_TARGET_(BOARD|SUBTARGET|PROFILE)' .config || true
 
           echo "=== 设备定义 ==="
-          grep -A20 'define Device/hiwifi_c526a' target/linux/ipq40xx/image/generic.mk \
-            || { echo "!! 设备定义缺失"; FAIL=1; }
+          if grep -A20 'define Device/hiwifi_c526a' target/linux/ipq40xx/image/generic.mk >/dev/null 2>&1; then
+            echo "  [OK]   设备定义存在"
+          else
+            echo "  [MISS] 设备定义缺失"; FAIL=1
+          fi
 
           echo "=== DTS ==="
-          ls -la target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts \
-            || { echo "!! DTS 未落地"; FAIL=1; }
+          if [ -f target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts ]; then
+            echo "  [OK]   DTS 已落地"
+          else
+            echo "  [MISS] DTS 缺失"; FAIL=1
+          fi
 
-          echo "=== ★ 官方 ath10k（必须全 OK）==="
+          echo "=== ★ 官方 ath10k（.config 必须全 OK）==="
           for opt in CONFIG_PACKAGE_kmod-ath10k \
                      CONFIG_PACKAGE_ath10k-firmware-qca4019 \
                      CONFIG_PACKAGE_ath10k-board-qca4019 ; do
             if grep -qx "${opt}=y" .config; then
               echo "  [OK]   ${opt}=y"
             else
-              echo "  [MISS] ${opt}"
-              FAIL=1
+              echo "  [MISS] ${opt}"; FAIL=1
             fi
           done
 
           echo "=== ★ 反向：CT 驱动必须不存在 ==="
-          if grep -q '^CONFIG_PACKAGE_kmod-ath10k-ct=y' .config; then
-            echo "  !! kmod-ath10k-ct 仍为 y"; FAIL=1
+          if grep -qx 'CONFIG_PACKAGE_kmod-ath10k-ct=y' .config; then
+            echo "  [BAD]  kmod-ath10k-ct 仍为 y"; FAIL=1
           else
             echo "  [OK]   kmod-ath10k-ct 未启用"
           fi
-          if grep -q '^CONFIG_PACKAGE_ath10k-firmware-qca4019-ct=y' .config; then
-            echo "  !! ath10k-firmware-qca4019-ct 仍为 y"; FAIL=1
+          if grep -qx 'CONFIG_PACKAGE_ath10k-firmware-qca4019-ct=y' .config; then
+            echo "  [BAD]  ath10k-firmware-qca4019-ct 仍为 y"; FAIL=1
           else
             echo "  [OK]   ath10k-firmware-qca4019-ct 未启用"
           fi
 
-          echo "=== ★ CONFIG_TARGET_DEVICE_PACKAGES 覆盖行 ==="
-          grep '^CONFIG_TARGET_DEVICE_PACKAGES_ipq40xx_generic_DEVICE_hiwifi_c526a=' .config \
-            || { echo "  !! 覆盖行缺失"; FAIL=1; }
+          echo "=== ★ generic.mk 中的 DEVICE_PACKAGES（真正决定编译依赖）==="
+          DP=$(grep -A12 'define Device/hiwifi_c526a' target/linux/ipq40xx/image/generic.mk | grep 'DEVICE_PACKAGES' || true)
+          if [ -n "$DP" ]; then
+            echo "  $DP"
+            case "$DP" in
+              *kmod-ath10k-ct*) echo "  [BAD]  DEVICE_PACKAGES 仍含 CT 驱动"; FAIL=1 ;;
+              *kmod-ath10k*)    echo "  [OK]   DEVICE_PACKAGES 含官方 kmod-ath10k" ;;
+              *)                echo "  [WARN] DEVICE_PACKAGES 未显式列出 kmod-ath10k（可能由 .config 提供）" ;;
+            esac
+          else
+            echo "  [INFO] generic.mk 中未定义 DEVICE_PACKAGES，依赖 .config 中的 CONFIG_PACKAGE_*"
+          fi
 
           echo "=== uci-defaults ==="
-          test -f files/etc/uci-defaults/99-c526a-network \
-            || { echo "!! uci-defaults 缺失"; FAIL=1; }
-          grep -q "10.0.0.3" files/etc/uci-defaults/99-c526a-network \
-            || { echo "!! LAN IP 未设置"; FAIL=1; }
-          grep -q "wifi-device\[0\].disabled='0'" files/etc/uci-defaults/99-c526a-network \
-            || { echo "!! WiFi 启用指令缺失"; FAIL=1; }
+          UCI=files/etc/uci-defaults/99-c526a-network
+          if [ -f "$UCI" ]; then
+            echo "  [OK]   文件存在：$UCI"
+            if grep -q "10.0.0.3" "$UCI"; then
+              echo "  [OK]   LAN IP = 10.0.0.3"
+            else
+              echo "  [MISS] 未找到 10.0.0.3"; FAIL=1
+            fi
+            if grep -q "wifi-device\[0\].disabled='0'" "$UCI"; then
+              echo "  [OK]   WiFi 启用指令存在"
+            else
+              echo "  [MISS] WiFi 启用指令缺失"; FAIL=1
+            fi
+            echo "  --- 文件内容 ---"
+            cat "$UCI"
+          else
+            echo "  [MISS] 文件不存在：$UCI"; FAIL=1
+          fi
 
-          [ "$FAIL" -eq 0 ] || { echo "!! 自检失败"; exit 1; }
+          if [ "$FAIL" -ne 0 ]; then
+            echo "!! 自检失败"; exit 1
+          fi
           echo "=== 全部自检通过 ==="
 
       - name: Download package sources
@@ -200,14 +233,18 @@ jobs:
           ls -la bin/targets/ipq40xx/generic/ 2>/dev/null || true
 
           SU=$(find bin/targets/ipq40xx/generic -maxdepth 1 -name '*hiwifi_c526a*sysupgrade.bin' -print -quit 2>/dev/null || true)
-          [ -n "$SU" ] && [ -s "$SU" ] \
-            && echo "  [OK] sysupgrade = $SU ($(wc -c < "$SU") B)" \
-            || { echo "  [MISS] sysupgrade.bin"; FAIL=1; }
+          if [ -n "$SU" ] && [ -s "$SU" ]; then
+            echo "  [OK] sysupgrade = $SU ($(wc -c < "$SU") B)"
+          else
+            echo "  [MISS] sysupgrade.bin"; FAIL=1
+          fi
 
           FU=$(find bin/targets/ipq40xx/generic -maxdepth 1 -name '*hiwifi_c526a*squashfs-factory.ubi' -print -quit 2>/dev/null || true)
-          [ -n "$FU" ] && [ -s "$FU" ] \
-            && echo "  [OK] factory.ubi = $FU ($(wc -c < "$FU") B)" \
-            || { echo "  [MISS] factory.ubi"; FAIL=1; }
+          if [ -n "$FU" ] && [ -s "$FU" ]; then
+            echo "  [OK] factory.ubi = $FU ($(wc -c < "$FU") B)"
+          else
+            echo "  [MISS] factory.ubi"; FAIL=1
+          fi
 
           [ "$FAIL" -eq 0 ] || exit 1
           echo "=== 产物断言通过 ==="
