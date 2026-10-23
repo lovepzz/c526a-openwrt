@@ -1,7 +1,6 @@
 # ============================================================================
 # OpenWrt 25.12 — HiWiFi C526A (极路由X)
 # 正常路由模式 · 启用 Wi-Fi · 官方 ath10k（非 CT）
-# ★ 通过 CONFIG_TARGET_DEVICE_PACKAGES 的减号语法强制移除 CT 默认包
 # ============================================================================
 
 # ---------- Target ----------
@@ -9,17 +8,11 @@ CONFIG_TARGET_ipq40xx=y
 CONFIG_TARGET_ipq40xx_generic=y
 CONFIG_TARGET_ipq40xx_generic_DEVICE_hiwifi_c526a=y
 
-# ---------- ★ 核心：覆盖设备默认包，移除 CT 并加入官方 ath10k ----------
-# ipq40xx 的 DEFAULT_PACKAGES 硬编码了 kmod-ath10k-ct / ath10k-firmware-qca4019-ct，
-# 仅修改 CONFIG_PACKAGE_* 会被 defconfig 覆盖。此行的减号会从默认列表中剔除 CT 包，
-# 然后加入官方驱动与固件。这是 Gluon / Gargoyle 在 ipq40xx 上切换 ath10k 的标准方式。
-CONFIG_TARGET_DEVICE_PACKAGES_ipq40xx_generic_DEVICE_hiwifi_c526a="-kmod-ath10k-ct -ath10k-firmware-qca4019-ct kmod-ath10k ath10k-firmware-qca4019 ath10k-board-qca4019"
-
-# ---------- 包管理器（25.12 实际仍会使用 apk，见上方说明）----------
+# ---------- 包管理器（25.12 实际仍会使用 apk）----------
 CONFIG_USE_APK=n
 CONFIG_PACKAGE_opkg=y
 
-# ---------- 官方 ath10k（显式选中作为后备）----------
+# ---------- 官方 ath10k（非 CT）----------
 CONFIG_PACKAGE_kmod-ath10k=y
 CONFIG_PACKAGE_ath10k-firmware-qca4019=y
 CONFIG_PACKAGE_ath10k-board-qca4019=y
