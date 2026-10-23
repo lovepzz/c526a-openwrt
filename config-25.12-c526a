@@ -8,9 +8,8 @@ CONFIG_TARGET_ipq40xx=y
 CONFIG_TARGET_ipq40xx_generic=y
 CONFIG_TARGET_ipq40xx_generic_DEVICE_hiwifi_c526a=y
 
-# ---------- 包管理器（25.12 实际仍会使用 apk）----------
-CONFIG_USE_APK=n
-CONFIG_PACKAGE_opkg=y
+
+
 
 # ---------- 官方 ath10k（非 CT）----------
 CONFIG_PACKAGE_kmod-ath10k=y
