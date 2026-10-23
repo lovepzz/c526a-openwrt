@@ -100,18 +100,8 @@ diff --git a/target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4019
 new file mode 100644
 --- /dev/null
 +++ b/target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts
-@@ -0,0 +1,365 @@
+@@ -0,0 +1,361 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
-+/*
-+ * HiWiFi C526A (极路由X) — ported to OpenWrt 24.10 / ipqess
-+ *
-+ * 与 keli 原作 (patches-5.10 / essedma 时代) 的差异：
-+ *   1. 节点名 mdio@90000 / ess-psgmii@98000 / ess-switch@c000000 / edma@c080000
-+ *      → 改为 label 引用 &mdio &gmac &switch &swportN（ipqess + DSA 模型）
-+ *   2. 新增 &watchdog / &prng 等现代表述（沿用官方 r619ac 风格）
-+ *   3. 保留 C526A 专有的 SPI-NOR 分区表、bdinfo、Factory、NAND ubi 布局
-+ *   4. Wi-Fi 已启用，走 11-ath10k-caldata 的 caldata_extract 路径（见文件末尾）
-+ */
 +
 +/dts-v1/;
 +
@@ -268,14 +258,6 @@ new file mode 100644
 +				read-only;
 +			};
 +
-+			/*
-+			 * ART 保持裸分区，不做 nvmem-layout。
-+			 * 校准数据由 11-ath10k-caldata 在启动时从 ART 现场提取：
-+			 *   caldata_extract "ART" 0x1000 0x2f20   → 2.4G
-+			 *   caldata_extract "ART" 0x5000 0x2f20   → 5G
-+			 * 避免 nvmem-cells 在 ipq40xx 上被 U-Boot 篡改设备树后
-+			 * 读取失败（-ENODATA），导致驱动无法 probe → iw phy 为空。
-+			 */
 +			partition@170000 {
 +				label = "ART";
 +				reg = <0x170000 0x10000>;
@@ -342,7 +324,7 @@ new file mode 100644
 +
 +			partition@0 {
 +				label = "ubi";
-+				reg = <0x0 0x8000000>;	/* 128 MiB */
++				reg = <0x0 0x8000000>;
 +			};
 +		};
 +	};
@@ -353,11 +335,11 @@ new file mode 100644
 +	perst-gpios = <&tlmm 38 GPIO_ACTIVE_LOW>;
 +	wake-gpios = <&tlmm 50 GPIO_ACTIVE_LOW>;
 +
-+	wifi@1,0 {
-+		compatible = "qcom,ath10k";
-+		reg = <0x00010000 0 0 0 0>;
-+		status = "okay";
-+		qcom,ath10k-calibration-variant = "C526A";
++	wifi@0,0 {
++		compatible = "mediatek,mt76";
++		reg = <0x0000 0 0 0 0>;
++		mediatek,mtd-eeprom = <&factory 0x0>;
++		ieee80211-freq-limit = <2400000 2500000>;
 +	};
 +};
 +
@@ -388,11 +370,6 @@ new file mode 100644
 +		};
 +	};
 +};
-+
-+/* ---------------------------------------------------------------
-+ * 以下是 24.10 与 keli 原作差异最大的部分：ipqess + DSA 端口模型
-+ * 官方 qca8k 驱动会依据这些 label 自动生成 lan1..lan4 / wan
-+ * --------------------------------------------------------------- */
 +
 +&mdio {
 +	status = "okay";
@@ -430,7 +407,6 @@ new file mode 100644
 +
 +&swport5 {
 +	status = "okay";
-+	/* 默认 label 就是 wan，无需重复声明 */
 +};
 +
 +&usb3_ss_phy {
@@ -444,26 +420,6 @@ new file mode 100644
 +&usb2_hs_phy {
 +	status = "okay";
 +};
-+
-+/* ---------------------------------------------------------------
-+ * Wi-Fi 启用（AHB 双频走 11-ath10k-caldata 的 caldata_extract 路径）
-+ *
-+ * ★ 为什么不用 nvmem-cells / nvmem-layout：
-+ *   ipq40xx 上部分设备（Cell-C RTL30VW、Teltonika RUTX10 等）
-+ *   的 U-Boot 会篡改设备树，导致 nvmem-cell 引用失效，驱动 probe
-+ *   时报 -ENODATA（-12），最终 iw phy 为空。
-+ *   OpenWrt 官方修复方式是回退到 11-ath10k-caldata 热插拔脚本
-+ *   从 ART 分区现场提取校准数据。C526A 同样适用。
-+ *
-+ * 校准数据偏移（与 11-ath10k-caldata 中的 caldata_extract 对应）：
-+ *   wifi0（2.4G）：ART + 0x1000，长度 0x2f20
-+ *   wifi1（5G）  ：ART + 0x5000，长度 0x2f20
-+ *
-+ * 第三频 5G（PCIe）已在上面 &pcie0 内定义 wifi@1,0 节点。
-+ *
-+ * 注意：keli 作者明确警告不要用 ath10k-ct，社区有多个 QCA4019
-+ *       在 CT 驱动下的网速问题未解决。本 patch 全程使用官方 ath10k。
-+ * --------------------------------------------------------------- */
 +
 +&wifi0 {
 +	status = "okay";
@@ -479,7 +435,7 @@ diff --git a/target/linux/ipq40xx/image/generic.mk b/target/linux/ipq40xx/image/
 index 4e155a3..3e11d0d 100644
 --- a/target/linux/ipq40xx/image/generic.mk
 +++ b/target/linux/ipq40xx/image/generic.mk
-@@ -655,6 +655,18 @@ define Device/kernel-size-6350-8300
+@@ -655,6 +655,19 @@ define Device/kernel-size-6350-8300
  	(e.g. "sysupgrade -n -F openwrt-squashfs-factory.bin" on command line)
  endef
  
@@ -492,6 +448,9 @@ index 4e155a3..3e11d0d 100644
 +	DEVICE_DTS_CONFIG := config@1
 +	BLOCKSIZE := 128k
 +	PAGESIZE := 2048
++	DEVICE_PACKAGES := kmod-ath10k ath10k-firmware-qca4019 \
++		kmod-mt7615e kmod-mt76-connac kmod-mt76-core \
++		kmod-usb3 kmod-usb2
 +endef
 +TARGET_DEVICES += hiwifi_c526a
 +
