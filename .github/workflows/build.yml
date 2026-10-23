@@ -42,20 +42,12 @@ jobs:
           [ "$ACTUAL" = "$OPENWRT_COMMIT" ] || { echo "!! HEAD mismatch"; exit 1; }
           grep -E '^LINUX_VERSION-' include/kernel-version.mk || true
 
-      # ================================================================
-      # ★ 自动修正 patch 元数据：
-      #   1) 补末尾换行（缺换行是 corrupt patch 的常见原因）
-      #   2) 重算 DTS 段落的 + 行数，修正 @@ -0,0 +1,N @@
-      #   3) 重新计算每个 hunk 的行数（对整个 patch 做一个兜底校验）
-      #   这样以后改 DTS 内容时不用再手动数行数。
-      # ================================================================
       - name: Fix patch metadata
         run: |
           set -e
           PATCH="$GITHUB_WORKSPACE/0001-Added-support-for-HIWIFI-c526a-25.12.patch"
-          [ -f "$PATCH" ] || { echo "::error::找不到 patch 文件：$PATCH"; exit 1; }
+          [ -f "$PATCH" ] || { echo "::error::找不到 patch 文件"; exit 1; }
 
-          # 1. 补末尾换行
           if [ -n "$(tail -c 1 "$PATCH")" ]; then
             echo "" >> "$PATCH"
             echo "已补上末尾换行"
@@ -63,11 +55,9 @@ jobs:
             echo "末尾已有换行"
           fi
 
-          # 2. 打印 DTS 段落当前 @@ 行
           echo "=== 修正前 ==="
           grep -n -m1 -A1 'qcom-ipq4019-c526a\.dts' "$PATCH" || true
 
-          # 3. 重算 DTS 段落的 + 行数
           N=$(awk '
             /^diff --git .*qcom-ipq4019-c526a\.dts / { f=1; next }
             f && /^diff --git / { exit }
@@ -76,35 +66,24 @@ jobs:
           ' "$PATCH")
           echo "DTS 段落实际 + 行数 = $N"
 
-          # 4. 修正 DTS 段落的 @@ -0,0 +1,N @@
           python3 - "$PATCH" "$N" <<'PY'
           import re, sys
           p, n = sys.argv[1], sys.argv[2]
           s = open(p, encoding="utf-8").read()
-          # 匹配 qcom-ipq4019-c526a.dts 的 diff 头之后第一个 @@ -0,0 +1,N @@
           pat = re.compile(
               r'(diff --git [^\n]*qcom-ipq4019-c526a\.dts[^\n]*\n'
               r'(?:[^\n]*\n)*?@@ -0,0 \+1,)\d+( @@)'
           )
           s2, cnt = pat.subn(r'\g<1>' + n + r'\g<2>', s, count=1)
           if cnt != 1:
-              print("!! 未找到 DTS 段落的 @@ 行，请检查 patch 结构")
+              print("!! 未找到 DTS 段落的 @@ 行")
               sys.exit(1)
           open(p, "w", encoding="utf-8").write(s2)
           print("已修正 DTS 段落 @@ 行数为 +1," + n)
           PY
 
-          # 5. 打印修正后的结果
           echo "=== 修正后 ==="
           grep -n -m1 -A1 'qcom-ipq4019-c526a\.dts' "$PATCH" || true
-
-          # 6. 尝试 git apply --check 做兜底校验（应用失败不会中断这里）
-          cd "$GITHUB_WORKSPACE/openwrt" 2>/dev/null || true
-          if [ -d .git ]; then
-            echo "=== git apply --check 校验 ==="
-            git apply --check --verbose "$PATCH" 2>&1 | tail -20 || \
-              echo "!! git apply --check 未通过，先继续，下一步会给出具体错误"
-          fi
 
       - name: Apply C526A patch
         run: |
@@ -126,18 +105,43 @@ jobs:
           set -e
           cd openwrt
           MK=target/linux/ipq40xx/image/generic.mk
-          if grep -q 'kmod-ath10k-ct' "$MK"; then
-            sed -i 's/kmod-ath10k-ct ath10k-firmware-qca4019-ct/kmod-ath10k ath10k-firmware-qca4019/g' "$MK"
-            echo "已替换 DEVICE_PACKAGES 中的 CT 包为官方包"
-          fi
-          # 确保 mt7615 驱动在 DEVICE_PACKAGES 里
-          if ! grep -A15 'define Device/hiwifi_c526a' "$MK" | grep -q 'kmod-mt7615e'; then
-            sed -i '/^define Device\/hiwifi_c526a$/,/^endef$/ {
-              /PAGESIZE := 2048/a\
-	DEVICE_PACKAGES := kmod-ath10k ath10k-firmware-qca4019 \\\n\t\tkmod-mt7615e kmod-mt76-connac kmod-mt76-core \\\n\t\tkmod-usb3 kmod-usb2
-            }' "$MK"
-            echo "已在 DEVICE_PACKAGES 中补上 mt7615 驱动"
-          fi
+
+          python3 - "$MK" <<'PY'
+          import re, sys
+
+          p = sys.argv[1]
+          s = open(p, encoding="utf-8").read()
+
+          s = s.replace(
+              "kmod-ath10k-ct ath10k-firmware-qca4019-ct",
+              "kmod-ath10k ath10k-firmware-qca4019",
+          )
+
+          pat = re.compile(
+              r"(define Device/hiwifi_c526a\n"
+              r"(?:.*\n)*?"
+              r"\tPAGESIZE := 2048\n)"
+              r"((?:.*\n)*?"
+              r"endef)"
+          )
+          m = pat.search(s)
+          if not m:
+              print("!! 未找到 hiwifi_c526a 的 PAGESIZE/endef")
+              sys.exit(1)
+
+          block = m.group(0)
+          if "kmod-mt7615e" not in block:
+              pkgs = (
+                  "\tDEVICE_PACKAGES := kmod-ath10k ath10k-firmware-qca4019 \\\n"
+                  "\t\tkmod-mt7615e kmod-mt76-connac kmod-mt76-core \\\n"
+                  "\t\tkmod-usb3 kmod-usb2\n"
+              )
+              s = s[:m.end(1)] + pkgs + s[m.end(1):]
+
+          open(p, "w", encoding="utf-8").write(s)
+          print("generic.mk 已更新")
+          PY
+
           echo "=== generic.mk 中 hiwifi_c526a 的 DEVICE_PACKAGES ==="
           grep -A15 'define Device/hiwifi_c526a' "$MK" | grep 'DEVICE_PACKAGES' || true
 
@@ -176,7 +180,6 @@ jobs:
           cp "$GITHUB_WORKSPACE/config-25.12-c526a" .config
           make defconfig
 
-          # 后备保险：强制禁用 CT 驱动（defconfig 之后写死，不再 defconfig）
           for opt in CONFIG_PACKAGE_kmod-ath10k-ct \
                      CONFIG_PACKAGE_ath10k-firmware-qca4019-ct ; do
             if grep -q "^${opt}=" .config; then
@@ -211,7 +214,7 @@ jobs:
             echo "  [MISS] DTS 缺失"; FAIL=1
           fi
 
-          echo "=== ★ 官方 ath10k ==="
+          echo "=== 官方 ath10k ==="
           for opt in CONFIG_PACKAGE_kmod-ath10k \
                      CONFIG_PACKAGE_ath10k-firmware-qca4019 ; do
             if grep -qx "${opt}=y" .config; then
@@ -221,7 +224,7 @@ jobs:
             fi
           done
 
-          echo "=== ★ MT7615 驱动 ==="
+          echo "=== MT7615 驱动 ==="
           for opt in CONFIG_PACKAGE_kmod-mt7615e \
                      CONFIG_PACKAGE_kmod-mt76-connac \
                      CONFIG_PACKAGE_kmod-mt76-core ; do
@@ -232,21 +235,21 @@ jobs:
             fi
           done
 
-          echo "=== ★ 反向：CT 驱动必须不存在 ==="
+          echo "=== 反向：CT 驱动必须不存在 ==="
           if grep -qx 'CONFIG_PACKAGE_kmod-ath10k-ct=y' .config; then
             echo "  [BAD]  kmod-ath10k-ct 仍为 y"; FAIL=1
           else
             echo "  [OK]   kmod-ath10k-ct 未启用"
           fi
 
-          echo "=== ★ generic.mk DEVICE_PACKAGES ==="
+          echo "=== generic.mk DEVICE_PACKAGES ==="
           DP=$(grep -A15 'define Device/hiwifi_c526a' target/linux/ipq40xx/image/generic.mk | grep 'DEVICE_PACKAGES' || true)
           if [ -n "$DP" ]; then
             echo "  $DP"
             case "$DP" in
-              *kmod-ath10k-ct*) echo "  [BAD]  DEVICE_PACKAGES 仍含 CT 驱动"; FAIL=1 ;;
-              *kmod-mt7615e*)   echo "  [OK]   DEVICE_PACKAGES 含 kmod-mt7615e" ;;
-              *)                echo "  [WARN] DEVICE_PACKAGES 未显式列出 kmod-mt7615e" ;;
+              *kmod-ath10k-ct*) echo "  [BAD]  DEVICE_PACKAGES 仍含 CT"; FAIL=1 ;;
+              *kmod-mt7615e*)   echo "  [OK]   含 kmod-mt7615e" ;;
+              *)                echo "  [WARN] 未显式列出 kmod-mt7615e" ;;
             esac
           else
             echo "  [INFO] generic.mk 中未定义 DEVICE_PACKAGES"
