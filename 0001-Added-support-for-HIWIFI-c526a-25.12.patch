@@ -98,10 +98,9 @@ index 28e11d9..c756ec2 100644
  	luma,wrtq-329acn|\
 diff --git a/target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts b/target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts
 new file mode 100644
-index 0000000..7a41b5e
 --- /dev/null
 +++ b/target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts
-@@ -0,0 +1,371 @@
+@@ -0,0 +1,369 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
 +/*
 + * HiWiFi C526A (极路由X) — ported to OpenWrt 24.10 / ipqess
@@ -111,7 +110,7 @@ index 0000000..7a41b5e
 + *      → 改为 label 引用 &mdio &gmac &switch &swportN（ipqess + DSA 模型）
 + *   2. 新增 &watchdog / &prng 等现代表述（沿用官方 r619ac 风格）
 + *   3. 保留 C526A 专有的 SPI-NOR 分区表、bdinfo、Factory、NAND ubi 布局
-+ *   4. Wi-Fi 部分：如需启用请参考文件末尾注释；本版默认关闭（旁路由只走有线）
++ *   4. Wi-Fi 已启用，走 11-ath10k-caldata 的 caldata_extract 路径（见文件末尾）
 + */
 +
 +/dts-v1/;
@@ -270,9 +269,12 @@ index 0000000..7a41b5e
 +			};
 +
 +			/*
-+			 * 注意：官方 r619ac 在 ART 里用 nvmem-layout 挂 precal，
-+			 * C526A 沿用 keli 的裸分区写法即可；若走 ath10k 需要
-+			 * 改成 nvmem-cell 方式（见文件末尾注释）。
++			 * ART 保持裸分区，不做 nvmem-layout。
++			 * 校准数据由 11-ath10k-caldata 在启动时从 ART 现场提取：
++			 *   caldata_extract "ART" 0x1000 0x2f20   → 2.4G
++			 *   caldata_extract "ART" 0x5000 0x2f20   → 5G
++			 * 避免 nvmem-cells 在 ipq40xx 上被 U-Boot 篡改设备树后
++			 * 读取失败（-ENODATA），导致驱动无法 probe → iw phy 为空。
 +			 */
 +			partition@170000 {
 +				label = "ART";
@@ -444,35 +446,38 @@ index 0000000..7a41b5e
 +};
 +
 +/* ---------------------------------------------------------------
-+ * Wi-Fi（默认关闭）
++ * Wi-Fi 启用（走 11-ath10k-caldata 的 caldata_extract 路径）
 + *
-+ * 若日后要启用，按官方 r619ac 的写法改成：
++ * ★ 为什么不用 nvmem-cells / nvmem-layout：
++ *   ipq40xx 上部分设备（Cell-C RTL30VW、Teltonika RUTX10 等）
++ *   的 U-Boot 会篡改设备树，导致 nvmem-cell 引用失效，驱动 probe
++ *   时报 -ENODATA（-12），最终 iw phy 为空。
++ *   OpenWrt 官方修复方式是回退到 11-ath10k-caldata 热插拔脚本
++ *   从 ART 分区现场提取校准数据。C526A 同样适用。
 + *
-+ * &wifi0 {
-+ *	status = "okay";
-+ *	nvmem-cell-names = "pre-calibration";
-+ *	nvmem-cells = <&precal_art_1000>;
-+ *	qcom,ath10k-calibration-variant = "C526A";
-+ * };
-+ * &wifi1 {
-+ *	status = "okay";
-+ *	nvmem-cell-names = "pre-calibration";
-+ *	nvmem-cells = <&precal_art_5000>;
-+ *	qcom,ath10k-calibration-variant = "C526A";
-+ * };
++ * 校准数据偏移（与 11-ath10k-caldata 中的 caldata_extract 对应）：
++ *   wifi0（2.4G）：ART + 0x1000，长度 0x2f20
++ *   wifi1（5G）  ：ART + 0x5000，长度 0x2f20
++ *   wifi2（5G，PCIe MT7615）：由 mt76 驱动从 Factory/ART 自行读取
 + *
-+ * 并在 ART 分区加 nvmem-layout：
-+ *	nvmem-layout {
-+ *		compatible = "fixed-layout";
-+ *		#address-cells = <1>;
-+ *		#size-cells = <1>;
-+ *		precal_art_1000: precal@1000 { reg = <0x1000 0x2f20>; };
-+ *		precal_art_5000: precal@5000 { reg = <0x5000 0x2f20>; };
-+ *	};
-+ *
-+ * 以及 PCIe 下 mt7615 的 mt76 节点（keli 原作写法）。
-+ * 注意：keli 作者明确警告不要用 ath10k-ct，社区有多个 4019 网速问题未解决。
++ * 注意：keli 作者明确警告不要用 ath10k-ct，社区有多个 QCA4019
++ *       在 CT 驱动下的网速问题未解决。本 patch 全程使用官方 ath10k。
 + * --------------------------------------------------------------- */
++
++&wifi0 {
++	status = "okay";
++	qcom,ath10k-calibration-variant = "C526A";
++};
++
++&wifi1 {
++	status = "okay";
++	qcom,ath10k-calibration-variant = "C526A";
++};
++
++&wifi2 {
++	status = "okay";
++	qcom,ath10k-calibration-variant = "C526A";
++};
 diff --git a/target/linux/ipq40xx/image/generic.mk b/target/linux/ipq40xx/image/generic.mk
 index 4e155a3..3e11d0d 100644
 --- a/target/linux/ipq40xx/image/generic.mk
