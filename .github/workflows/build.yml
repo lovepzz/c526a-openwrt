@@ -1,4 +1,4 @@
-name: Build xin C526A (OpenWrt 25.12 + ipqess + ath10k + WiFi)
+name: 构建改dts文件这次 C526A (OpenWrt 25.12 + ipqess + ath10k + WiFi)
 
 on:
   workflow_dispatch:
