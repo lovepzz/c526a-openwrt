@@ -1,4 +1,4 @@
-name: Build C526A (OpenWrt 25.12 + ipqess + WiFi + opkg)
+name: Build C526A (OpenWrt 25.12 + ipqess + ath10k + WiFi)
 
 on:
   workflow_dispatch:
@@ -29,8 +29,6 @@ jobs:
 
       - name: Clone OpenWrt (pinned commit)
         env:
-          # 请确认此 SHA 对应你想要的 25.12 版本（如 v25.12.6 / 6.12.112）
-          # 查法：https://api.github.com/repos/openwrt/openwrt/branches/openwrt-25.12
           OPENWRT_COMMIT: 450459bef3b5ba2414abf68feafe60446f53db51
         run: |
           set -e
@@ -67,7 +65,6 @@ jobs:
             sed -i 's/kmod-ath10k-ct ath10k-firmware-qca4019-ct/kmod-ath10k ath10k-firmware-qca4019 ath10k-board-qca4019/g' "$MK"
             echo "已替换 DEVICE_PACKAGES 中的 CT 包为官方包"
           fi
-          grep -A12 'define Device/hiwifi_c526a' "$MK" | grep 'DEVICE_PACKAGES' || true
 
       - name: Update feeds
         run: |
@@ -96,8 +93,6 @@ jobs:
           exit 0
           EOF
           chmod +x files/etc/uci-defaults/99-c526a-network
-          echo "=== uci-defaults ==="
-          cat files/etc/uci-defaults/99-c526a-network
 
       - name: Load config
         run: |
@@ -105,8 +100,23 @@ jobs:
           cd openwrt
           cp "$GITHUB_WORKSPACE/config-25.12-c526a" .config
           make defconfig
+
+          # ================================================================
+          # 后备保险：即使 CONFIG_TARGET_DEVICE_PACKAGES 因版本差异未生效，
+          # 也在最后一次 defconfig 之后强制写死 CT 包为 n，且不再 defconfig。
+          # ================================================================
+          echo "=== 后备：强制禁用 CT 驱动 ==="
+          for opt in CONFIG_PACKAGE_kmod-ath10k-ct \
+                     CONFIG_PACKAGE_ath10k-firmware-qca4019-ct ; do
+            if grep -q "^${opt}=" .config; then
+              sed -i "s|^${opt}=.*|# ${opt} is not set|" .config
+            else
+              printf '# %s is not set\n' "$opt" >> .config
+            fi
+          done
+
           echo "=== 关键配置确认 ==="
-          grep -E 'CONFIG_TARGET_ipq40xx|CONFIG_USE_APK|CONFIG_PACKAGE_(kmod-ath10k|ath10k-|opkg|wpad)' .config || true
+          grep -E 'CONFIG_TARGET_DEVICE_PACKAGES_ipq40xx|CONFIG_PACKAGE_(kmod-ath10k|ath10k-firmware|opkg)' .config || true
 
       - name: Verify
         run: |
@@ -124,11 +134,10 @@ jobs:
           ls -la target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts \
             || { echo "!! DTS 未落地"; FAIL=1; }
 
-          echo "=== ★ 官方 ath10k + opkg（必须全 OK）==="
+          echo "=== ★ 官方 ath10k（必须全 OK）==="
           for opt in CONFIG_PACKAGE_kmod-ath10k \
                      CONFIG_PACKAGE_ath10k-firmware-qca4019 \
-                     CONFIG_PACKAGE_ath10k-board-qca4019 \
-                     CONFIG_PACKAGE_opkg ; do
+                     CONFIG_PACKAGE_ath10k-board-qca4019 ; do
             if grep -qx "${opt}=y" .config; then
               echo "  [OK]   ${opt}=y"
             else
@@ -137,17 +146,21 @@ jobs:
             fi
           done
 
-          echo "=== ★ 反向：CT 驱动与 apk 不能出现 ==="
+          echo "=== ★ 反向：CT 驱动必须不存在 ==="
           if grep -q '^CONFIG_PACKAGE_kmod-ath10k-ct=y' .config; then
             echo "  !! kmod-ath10k-ct 仍为 y"; FAIL=1
           else
             echo "  [OK]   kmod-ath10k-ct 未启用"
           fi
-          if grep -q '^CONFIG_USE_APK=y' .config; then
-            echo "  !! CONFIG_USE_APK 仍为 y"; FAIL=1
+          if grep -q '^CONFIG_PACKAGE_ath10k-firmware-qca4019-ct=y' .config; then
+            echo "  !! ath10k-firmware-qca4019-ct 仍为 y"; FAIL=1
           else
-            echo "  [OK]   CONFIG_USE_APK 已关闭"
+            echo "  [OK]   ath10k-firmware-qca4019-ct 未启用"
           fi
+
+          echo "=== ★ CONFIG_TARGET_DEVICE_PACKAGES 覆盖行 ==="
+          grep '^CONFIG_TARGET_DEVICE_PACKAGES_ipq40xx_generic_DEVICE_hiwifi_c526a=' .config \
+            || { echo "  !! 覆盖行缺失"; FAIL=1; }
 
           echo "=== uci-defaults ==="
           test -f files/etc/uci-defaults/99-c526a-network \
@@ -213,7 +226,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: c526a-25.12-ipqess-ath10k-opkg-wifi
+          name: c526a-25.12-ath10k-wifi
           path: output/
           if-no-files-found: error
           retention-days: 30
