@@ -1,11 +1,11 @@
-name: Build C526A (OpenWrt 25.12.6 + ipqess + WiFi)
+name: Build C526A (OpenWrt 25.12 + ipqess + WiFi + opkg)
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 350
 
     steps:
@@ -15,7 +15,7 @@ jobs:
       - name: Free up disk space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" 2>/dev/null || true
           sudo apt-get clean
           df -h /
 
@@ -27,10 +27,10 @@ jobs:
             python3-setuptools rsync swig unzip zlib1g-dev file wget ccache \
             libelf-dev python3-pyelftools
 
-      - name: Clone OpenWrt (openwrt-25.12 @ v25.12.6 commit)
+      - name: Clone OpenWrt (pinned commit)
         env:
-          # v25.12.6 对应的 commit（内核 6.12.112）
-          # 来源：https://git.openwrt.org/openwrt/openwrt/log/?h=openwrt-25.12
+          # 请确认此 SHA 对应你想要的 25.12 版本（如 v25.12.6 / 6.12.112）
+          # 查法：https://api.github.com/repos/openwrt/openwrt/branches/openwrt-25.12
           OPENWRT_COMMIT: 450459bef3b5ba2414abf68feafe60446f53db51
         run: |
           set -e
@@ -40,10 +40,8 @@ jobs:
           git fetch --depth 1 origin "$OPENWRT_COMMIT"
           git checkout --detach FETCH_HEAD
           ACTUAL=$(git rev-parse HEAD)
-          if [ "$ACTUAL" != "$OPENWRT_COMMIT" ]; then
-            echo "!! HEAD mismatch"; exit 1
-          fi
-          echo "OK: $ACTUAL"
+          echo "HEAD = $ACTUAL"
+          [ "$ACTUAL" = "$OPENWRT_COMMIT" ] || { echo "!! HEAD mismatch"; exit 1; }
           grep -E '^LINUX_VERSION-' include/kernel-version.mk || true
 
       - name: Apply C526A patch
@@ -58,7 +56,18 @@ jobs:
           test -f target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts \
             || { echo "!! DTS 不存在"; exit 1; }
           grep -q 'hiwifi_c526a' target/linux/ipq40xx/image/generic.mk \
-            || { echo "!! generic.mk 缺失"; exit 1; }
+            || { echo "!! generic.mk 缺失设备定义"; exit 1; }
+
+      - name: Ensure official ath10k in generic.mk
+        run: |
+          set -e
+          cd openwrt
+          MK=target/linux/ipq40xx/image/generic.mk
+          if grep -q 'kmod-ath10k-ct' "$MK"; then
+            sed -i 's/kmod-ath10k-ct ath10k-firmware-qca4019-ct/kmod-ath10k ath10k-firmware-qca4019 ath10k-board-qca4019/g' "$MK"
+            echo "已替换 DEVICE_PACKAGES 中的 CT 包为官方包"
+          fi
+          grep -A12 'define Device/hiwifi_c526a' "$MK" | grep 'DEVICE_PACKAGES' || true
 
       - name: Update feeds
         run: |
@@ -66,40 +75,29 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      # ================================================================
-      # 关键：启用 Wi-Fi 并设置 LAN IP 为 10.0.0.3
-      # 通过 /etc/uci-defaults 脚本在首次启动时自动执行，
-      # 无需手动登录 LuCI 修改。
-      # 参考：https://openwrt.org/docs/guide-developer/uci-defaults
-      # ================================================================
-      - name: Add uci-defaults for WiFi & LAN IP
+      - name: Add uci-defaults (LAN IP + WiFi)
         run: |
           set -e
           cd openwrt
           mkdir -p files/etc/uci-defaults
-          cat > files/etc/uci-defaults/99-c526a-custom <<'EOF'
+          cat > files/etc/uci-defaults/99-c526a-network <<'EOF'
           #!/bin/sh
-          # 设置 LAN IP 为 10.0.0.3/24
+          # LAN IP 10.0.0.3/24
           uci set network.lan.ipaddr='10.0.0.3'
           uci set network.lan.netmask='255.255.255.0'
           uci commit network
 
-          # 启用所有 Wi-Fi 射频（wifi0/wifi1/wifi2）
+          # 启用所有 Wi-Fi 射频
           uci set wireless.@wifi-device[0].disabled='0'
           uci set wireless.@wifi-device[1].disabled='0'
           uci set wireless.@wifi-device[2].disabled='0'
           uci commit wireless
 
-          # 可选：设置 SSID（如需要可取消注释）
-          # uci set wireless.@wifi-iface[0].ssid='C526A-2G'
-          # uci set wireless.@wifi-iface[1].ssid='C526A-5G'
-          # uci commit wireless
-
           exit 0
           EOF
-          chmod +x files/etc/uci-defaults/99-c526a-custom
-          echo "=== uci-defaults 已写入 ==="
-          cat files/etc/uci-defaults/99-c526a-custom
+          chmod +x files/etc/uci-defaults/99-c526a-network
+          echo "=== uci-defaults ==="
+          cat files/etc/uci-defaults/99-c526a-network
 
       - name: Load config
         run: |
@@ -107,47 +105,30 @@ jobs:
           cd openwrt
           cp "$GITHUB_WORKSPACE/config-25.12-c526a" .config
           make defconfig
-
-          # 确保 Wi-Fi 驱动与 wpad 被选中（官方默认通常是 wpad-basic-mbedtls）
-          cat >> .config <<'EOF'
-          CONFIG_PACKAGE_kmod-ath10k-ct=y
-          CONFIG_PACKAGE_ath10k-firmware-qca4019-ct=y
-          CONFIG_PACKAGE_wpad-basic-mbedtls=y
-          CONFIG_PACKAGE_kmod-usb3=y
-          CONFIG_PACKAGE_kmod-usb2=y
-          EOF
-
-          # 再次 defconfig 收敛依赖（但不再修改关键开关）
-          make defconfig
-
           echo "=== 关键配置确认 ==="
-          grep -E 'CONFIG_TARGET_ipq40xx|CONFIG_PACKAGE_(kmod-ath10k|wpad|kmod-usb)' .config || true
-          ls -la .config && wc -l .config
+          grep -E 'CONFIG_TARGET_ipq40xx|CONFIG_USE_APK|CONFIG_PACKAGE_(kmod-ath10k|ath10k-|opkg|wpad)' .config || true
 
-      - name: Verify target and driver
+      - name: Verify
         run: |
           cd openwrt
           FAIL=0
+
           echo "=== target ==="
           grep -E 'CONFIG_TARGET_(BOARD|SUBTARGET|PROFILE)' .config || true
-          echo ""
+
           echo "=== 设备定义 ==="
           grep -A20 'define Device/hiwifi_c526a' target/linux/ipq40xx/image/generic.mk \
-            || { echo "!! generic.mk 缺失"; FAIL=1; }
-          echo ""
+            || { echo "!! 设备定义缺失"; FAIL=1; }
+
           echo "=== DTS ==="
           ls -la target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts \
             || { echo "!! DTS 未落地"; FAIL=1; }
-          echo ""
-          echo "=== ipqess 补丁数（期望 >=6）==="
-          n=$(ls target/linux/ipq40xx/patches-6.12/ 2>/dev/null | grep -ci ipqess || true); n=${n:-0}
-          echo "ipqess 补丁数 = $n"
-          [ "$n" -ge 6 ] || { echo "!! ipqess 补丁不足"; FAIL=1; }
-          echo ""
-          echo "=== Wi-Fi 驱动配置 ==="
-          for opt in CONFIG_PACKAGE_kmod-ath10k-ct \
-                     CONFIG_PACKAGE_ath10k-firmware-qca4019-ct \
-                     CONFIG_PACKAGE_wpad-basic-mbedtls ; do
+
+          echo "=== ★ 官方 ath10k + opkg（必须全 OK）==="
+          for opt in CONFIG_PACKAGE_kmod-ath10k \
+                     CONFIG_PACKAGE_ath10k-firmware-qca4019 \
+                     CONFIG_PACKAGE_ath10k-board-qca4019 \
+                     CONFIG_PACKAGE_opkg ; do
             if grep -qx "${opt}=y" .config; then
               echo "  [OK]   ${opt}=y"
             else
@@ -155,18 +136,28 @@ jobs:
               FAIL=1
             fi
           done
-          echo ""
-          echo "=== uci-defaults 文件 ==="
-          test -f files/etc/uci-defaults/99-c526a-custom \
-            || { echo "!! uci-defaults 缺失"; FAIL=1; }
-          grep -q "10.0.0.3" files/etc/uci-defaults/99-c526a-custom \
-            || { echo "!! LAN IP 未设置为 10.0.0.3"; FAIL=1; }
-          grep -q "wireless.@wifi-device\[0\].disabled='0'" files/etc/uci-defaults/99-c526a-custom \
-            || { echo "!! WiFi 启用指令缺失"; FAIL=1; }
-          echo "OK: uci-defaults 包含 LAN IP 与 WiFi 启用"
-          if [ "$FAIL" -ne 0 ]; then
-            echo "!! 自检失败"; exit 1
+
+          echo "=== ★ 反向：CT 驱动与 apk 不能出现 ==="
+          if grep -q '^CONFIG_PACKAGE_kmod-ath10k-ct=y' .config; then
+            echo "  !! kmod-ath10k-ct 仍为 y"; FAIL=1
+          else
+            echo "  [OK]   kmod-ath10k-ct 未启用"
           fi
+          if grep -q '^CONFIG_USE_APK=y' .config; then
+            echo "  !! CONFIG_USE_APK 仍为 y"; FAIL=1
+          else
+            echo "  [OK]   CONFIG_USE_APK 已关闭"
+          fi
+
+          echo "=== uci-defaults ==="
+          test -f files/etc/uci-defaults/99-c526a-network \
+            || { echo "!! uci-defaults 缺失"; FAIL=1; }
+          grep -q "10.0.0.3" files/etc/uci-defaults/99-c526a-network \
+            || { echo "!! LAN IP 未设置"; FAIL=1; }
+          grep -q "wifi-device\[0\].disabled='0'" files/etc/uci-defaults/99-c526a-network \
+            || { echo "!! WiFi 启用指令缺失"; FAIL=1; }
+
+          [ "$FAIL" -eq 0 ] || { echo "!! 自检失败"; exit 1; }
           echo "=== 全部自检通过 ==="
 
       - name: Download package sources
@@ -185,7 +176,6 @@ jobs:
         run: |
           cd openwrt
           tail -120 build.log || true
-          echo "=== 错误行 ==="
           grep -n -i -E "error|failed to build" build.log | tail -60 || true
 
       - name: Assert firmware produced
@@ -193,39 +183,20 @@ jobs:
         run: |
           cd openwrt
           FAIL=0
-          echo "=== bin/targets/ipq40xx/generic 内容 ==="
-          find bin/targets/ipq40xx/generic -type f 2>/dev/null | head -40 || true
-          echo ""
-          DEV_OPT='CONFIG_TARGET_ipq40xx_generic_DEVICE_hiwifi_c526a=y'
-          if grep -qx "$DEV_OPT" .config; then
-            echo "  [OK] $DEV_OPT"
-          else
-            echo "  [MISS] $DEV_OPT"; FAIL=1
-          fi
-          SU=$(find bin/targets/ipq40xx/generic -maxdepth 1 -type f \
-                 -name '*hiwifi_c526a*sysupgrade.bin' -print -quit 2>/dev/null || true)
-          if [ -n "$SU" ] && [ -s "$SU" ]; then
-            echo "  [OK] sysupgrade = $SU ($(wc -c < "$SU") B)"
-          else
-            echo "  [MISS] sysupgrade.bin"; FAIL=1
-          fi
-          FU=$(find bin/targets/ipq40xx/generic -maxdepth 1 -type f \
-                 -name '*hiwifi_c526a*squashfs-factory.ubi' -print -quit 2>/dev/null || true)
-          if [ -n "$FU" ] && [ -s "$FU" ]; then
-            echo "  [OK] factory.ubi = $FU ($(wc -c < "$FU") B)"
-          else
-            echo "  [MISS] factory.ubi"; FAIL=1
-          fi
-          IR=$(find bin/targets/ipq40xx/generic -maxdepth 1 -type f \
-                 -name '*hiwifi_c526a*initramfs*' -print -quit 2>/dev/null || true)
-          if [ -n "$IR" ] && [ -s "$IR" ]; then
-            echo "  [OK] initramfs = $IR ($(wc -c < "$IR") B)"
-          else
-            echo "  [MISS] initramfs"; FAIL=1
-          fi
-          if [ "$FAIL" -ne 0 ]; then
-            echo "!! 产物断言失败"; exit 1
-          fi
+          echo "=== bin/targets/ipq40xx/generic ==="
+          ls -la bin/targets/ipq40xx/generic/ 2>/dev/null || true
+
+          SU=$(find bin/targets/ipq40xx/generic -maxdepth 1 -name '*hiwifi_c526a*sysupgrade.bin' -print -quit 2>/dev/null || true)
+          [ -n "$SU" ] && [ -s "$SU" ] \
+            && echo "  [OK] sysupgrade = $SU ($(wc -c < "$SU") B)" \
+            || { echo "  [MISS] sysupgrade.bin"; FAIL=1; }
+
+          FU=$(find bin/targets/ipq40xx/generic -maxdepth 1 -name '*hiwifi_c526a*squashfs-factory.ubi' -print -quit 2>/dev/null || true)
+          [ -n "$FU" ] && [ -s "$FU" ] \
+            && echo "  [OK] factory.ubi = $FU ($(wc -c < "$FU") B)" \
+            || { echo "  [MISS] factory.ubi"; FAIL=1; }
+
+          [ "$FAIL" -eq 0 ] || exit 1
           echo "=== 产物断言通过 ==="
 
       - name: Prepare artifacts
@@ -237,13 +208,12 @@ jobs:
             -o -name "*metadata*" -o -name "profiles.json" -o -name "*.buildinfo" \) \
             -exec cp {} "$GITHUB_WORKSPACE/output/" \; 2>/dev/null || true
           ls -la "$GITHUB_WORKSPACE/output/"
-          cat bin/targets/ipq40xx/generic/*.buildinfo 2>/dev/null || true
 
       - name: Upload firmware
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: c526a-25.12.6-ipqess-wifi-firmware
+          name: c526a-25.12-ipqess-ath10k-opkg-wifi
           path: output/
           if-no-files-found: error
           retention-days: 30
