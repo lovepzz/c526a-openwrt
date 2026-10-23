@@ -1,5 +1,5 @@
 # ============================================================================
-# OpenWrt 25.12 (v25.12.6, kernel 6.12.112) — HiWiFi C526A (极路由X)
+# OpenWrt 25.12 — HiWiFi C526A (极路由X)
 # 官方源 · ipqess · 正常路由模式 · 启用 Wi-Fi · 无 PassWall
 # ★ 官方 ath10k 驱动（非 CT）+ opkg 包管理器（非 apk）
 # ============================================================================
@@ -10,24 +10,23 @@ CONFIG_TARGET_ipq40xx_generic=y
 CONFIG_TARGET_ipq40xx_generic_DEVICE_hiwifi_c526a=y
 
 # ---------- ★ 包管理器：apk → opkg ----------
-# OpenWrt 25.12 默认使用 apk，强制切回 opkg + ipk
 CONFIG_USE_APK=n
 CONFIG_PACKAGE_opkg=y
 
 # ---------- ★ Wi-Fi 驱动：官方 ath10k（非 CT）----------
-# 官方驱动包名无 “-ct” 后缀
 CONFIG_PACKAGE_kmod-ath10k=y
 CONFIG_PACKAGE_ath10k-firmware-qca4019=y
+CONFIG_PACKAGE_ath10k-board-qca4019=y
 
 # Wi-Fi 认证组件（25.12 默认 wpad-basic-mbedtls）
 CONFIG_PACKAGE_wpad-basic-mbedtls=y
 
-# USB 3.0（C526A 硬件自带）
+# USB（C526A 硬件自带）
 CONFIG_PACKAGE_kmod-usb3=y
 CONFIG_PACKAGE_kmod-usb2=y
 CONFIG_PACKAGE_kmod-usb-dwc3-qcom=y
 
-# ---------- LuCI + 中文界面 ----------
+# ---------- LuCI + 中文 ----------
 CONFIG_PACKAGE_luci=y
 CONFIG_PACKAGE_luci-app-firewall=y
 CONFIG_PACKAGE_luci-app-opkg=y
@@ -36,7 +35,7 @@ CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
 CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y
 CONFIG_PACKAGE_luci-i18n-opkg-zh-cn=y
 
-# ---------- 网络基础（正常路由模式必需）----------
+# ---------- 网络基础（正常路由模式）----------
 CONFIG_PACKAGE_dnsmasq-full=y
 CONFIG_PACKAGE_ip-full=y
 CONFIG_PACKAGE_odhcp6c=y
@@ -72,6 +71,6 @@ CONFIG_DEBUG=n
 # ---------- 版本标识 ----------
 CONFIG_VERSIONOPT=y
 CONFIG_VERSION_DIST="OpenWrt-C526A"
-CONFIG_VERSION_NUMBER="25.12.6-ipqess-ath10k-opkg"
+CONFIG_VERSION_NUMBER="25.12-ipqess-ath10k-opkg-wifi"
 CONFIG_VERSION_MANUFACTURER="HiWiFi"
 CONFIG_VERSION_PRODUCT="C526A"
