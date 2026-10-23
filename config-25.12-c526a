@@ -14,7 +14,6 @@ CONFIG_TARGET_ipq40xx_generic_DEVICE_hiwifi_c526a=y
 # ---------- 官方 ath10k（非 CT）----------
 CONFIG_PACKAGE_kmod-ath10k=y
 CONFIG_PACKAGE_ath10k-firmware-qca4019=y
-CONFIG_PACKAGE_ath10k-board-qca4019=y
 CONFIG_PACKAGE_wpad-basic-mbedtls=y
 
 # ---------- USB ----------
