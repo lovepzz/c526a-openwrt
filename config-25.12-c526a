@@ -15,6 +15,9 @@ CONFIG_TARGET_ipq40xx_generic_DEVICE_hiwifi_c526a=y
 CONFIG_PACKAGE_kmod-ath10k=y
 CONFIG_PACKAGE_ath10k-firmware-qca4019=y
 CONFIG_PACKAGE_wpad-basic-mbedtls=y
+CONFIG_PACKAGE_kmod-mt7615e=y
+CONFIG_PACKAGE_kmod_mt76_connac=y
+CONFIG_PACKAGE_kmod-mt76-core=y
 
 # ---------- USB ----------
 CONFIG_PACKAGE_kmod-usb3=y
