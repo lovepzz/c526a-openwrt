@@ -49,8 +49,7 @@ index 0000000..0be00f5
 +[ "$ACTION" = "add" ] || exit 0
 +
 +PHYNBR=${DEVPATH##*/phy}
-+
-+[ -n $PHYNBR ] || exit 0
++[ -n "$PHYNBR" ] || exit 0
 +
 +. /lib/functions.sh
 +. /lib/functions/system.sh
@@ -60,9 +59,7 @@ index 0000000..0be00f5
 +case "$board" in
 +	hiwifi,c526a)
 +		[ "$PHYNBR" -eq 0 ] && \
-+			mtd_get_mac_ascii bdinfo "Vfac_mac " > /sys${DEVPATH}/macaddress
-+		;;
-+	*)
++			mtd_get_mac_ascii bdinfo "Vfac_mac" > /sys${DEVPATH}/macaddress
 +		;;
 +esac
 diff --git a/target/linux/ipq40xx/base-files/etc/init.d/mt7615_reboot b/target/linux/ipq40xx/base-files/etc/init.d/mt7615_reboot
@@ -100,7 +97,7 @@ diff --git a/target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4019
 new file mode 100644
 --- /dev/null
 +++ b/target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts
-@@ -0,0 +1,361 @@
+@@ -0,0 +1,360 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
 +
 +/dts-v1/;
@@ -338,7 +335,7 @@ new file mode 100644
 +	wifi@0,0 {
 +		compatible = "mediatek,mt76";
 +		reg = <0x0000 0 0 0 0>;
-+		mediatek,mtd-eeprom = <&factory 0x0>;
++		mediatek,mtd-eeprom = <&factory 0x8000>;
 +		ieee80211-freq-limit = <2400000 2500000>;
 +	};
 +};
