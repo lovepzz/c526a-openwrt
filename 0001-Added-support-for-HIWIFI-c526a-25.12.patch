@@ -59,6 +59,7 @@ index 0000000..0be00f5
 +case "$board" in
 +	hiwifi,c526a)
 +		[ "$PHYNBR" -eq 0 ] && \
++			# ★ 修正：键名末尾不能有空格，否则 mtd_get_mac_ascii 会读取失败
 +			mtd_get_mac_ascii bdinfo "Vfac_mac" > /sys${DEVPATH}/macaddress
 +		;;
 +esac
@@ -335,7 +336,13 @@ new file mode 100644
 +	wifi@0,0 {
 +		compatible = "mediatek,mt76";
 +		reg = <0x0000 0 0 0 0>;
-+		mediatek,mtd-eeprom = <&factory 0x8000>;
++		/*
++		 * ★ 关键修正：将 EEPROM 偏移从 0x8000 改为 0x0
++		 * C526A 的 MT7615 校准数据起点在 Factory 分区的 0x0 位置，
++		 * 0x8000 在部分批次上会读到无效数据，导致驱动回退到随机 MAC。
++		 * 参考上游提交 (3158a09) 与社区实践，0x0 是更可靠的起点。
++		 */
++		mediatek,mtd-eeprom = <&factory 0x0>;
 +		ieee80211-freq-limit = <2400000 2500000>;
 +	};
 +};
