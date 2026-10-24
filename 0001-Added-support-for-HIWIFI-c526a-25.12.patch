@@ -62,25 +62,6 @@ index 0000000..0be00f5
 +			mtd_get_mac_ascii bdinfo "Vfac_mac" > /sys${DEVPATH}/macaddress
 +		;;
 +esac
-diff --git a/target/linux/ipq40xx/base-files/etc/init.d/mt7615_reboot b/target/linux/ipq40xx/base-files/etc/init.d/mt7615_reboot
-new file mode 100644
-index 0000000..47c35a2
---- /dev/null
-+++ b/target/linux/ipq40xx/base-files/etc/init.d/mt7615_reboot
-@@ -0,0 +1,13 @@
-+#!/bin/sh /etc/rc.common
-+
-+STOP=60
-+
-+stop() {
-+	. /lib/functions.sh
-+
-+	case $(board_name) in
-+		hiwifi,c526a)
-+			rmmod mt7615e
-+			;;
-+	esac
-+}
 diff --git a/target/linux/ipq40xx/base-files/lib/upgrade/platform.sh b/target/linux/ipq40xx/base-files/lib/upgrade/platform.sh
 index 28e11d9..c756ec2 100644
 --- a/target/linux/ipq40xx/base-files/lib/upgrade/platform.sh
@@ -97,7 +78,7 @@ diff --git a/target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4019
 new file mode 100644
 --- /dev/null
 +++ b/target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts
-@@ -0,0 +1,373 @@
+@@ -0,0 +1,377 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
 +
 +/dts-v1/;
@@ -291,6 +272,10 @@ new file mode 100644
 +				eeprom_factory_0: eeprom@0 {
 +					reg = <0x0 0x4da8>;
 +				};
++
++				macaddr_factory_4: macaddr@4 {
++					reg = <0x4 0x6>;
++				};
 +			};
 +
 +			partition@1d0000 {
@@ -343,8 +328,8 @@ new file mode 100644
 +	wifi@0,0 {
 +		compatible = "mediatek,mt76";
 +		reg = <0x0000 0 0 0 0>;
-+		nvmem-cells = <&eeprom_factory_0>;
-+		nvmem-cell-names = "eeprom";
++		nvmem-cells = <&eeprom_factory_0>, <&macaddr_factory_4>;
++		nvmem-cell-names = "eeprom", "mac-address";
 +		ieee80211-freq-limit = <2400000 2500000>;
 +	};
 +};
