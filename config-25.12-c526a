@@ -1,52 +1,79 @@
 # ============================================================================
 # OpenWrt 25.12 — HiWiFi C526A (极路由X)
-# 正常路由模式 · 启用 Wi-Fi · 官方 ath10k + MT7615 双频
+# 硬件：IPQ4019 (5G) + MT7615 (2.4G PCIe)
+# 模式：正常路由 · 启用 Wi-Fi · 官方 ath10k（非 CT）· apk 包管理
 # ============================================================================
 
-# ---------- Target ----------
+# ---------- Target：锁定 C526A 设备 ----------
 CONFIG_TARGET_ipq40xx=y
 CONFIG_TARGET_ipq40xx_generic=y
 CONFIG_TARGET_ipq40xx_generic_DEVICE_hiwifi_c526a=y
 
-# ---------- 官方 ath10k（5G）----------
+# ============================================================================
+# ★★★ 中文语言支持（核心修正）★★★
+#
+# 之前不显示中文选项的根本原因：只选了语言包，但缺少编译级开关。
+# LuCI 的语言支持由 LUCI_LANGS 变量控制，不打开它，语言包会被构建系统忽略。
+# ============================================================================
+
+# 编译时强制包含简体中文支持（这是语言选项能出现在下拉菜单的前提）
+CONFIG_LUCI_LANG_zh-cn=y
+
+# 语言包生效的基础依赖，必须显式选中
+CONFIG_PACKAGE_luci-base=y
+CONFIG_PACKAGE_luci-compat=y
+
+# 核心中文语言包（必装）
+CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+
+# 具体功能页面的翻译（按需）
+CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-package-manager-zh-cn=y
+
+# ============================================================================
+# Wi-Fi 驱动
+# ============================================================================
+
+# ---------- 5G：IPQ4019 自带，官方 ath10k ----------
 CONFIG_PACKAGE_kmod-ath10k=y
 CONFIG_PACKAGE_ath10k-firmware-qca4019=y
 
-# ---------- MT7615（2.4G，PCIe）----------
+# ---------- 2.4G：MT7615（PCIe），需驱动 + 固件 ----------
 CONFIG_PACKAGE_kmod-mt7615e=y
-CONFIG_PACKAGE_kmod-mt7615-firmware=y        # ★ 新增，MT7615 必需固件
-CONFIG_PACKAGE_kmod-mt76-connac=y            # ★ 修正：下划线 → 连字符
+CONFIG_PACKAGE_kmod-mt7615-firmware=y      # 缺少此行会导致 2.4G 功率锁死在 6mW
+CONFIG_PACKAGE_kmod-mt76-connac=y          # 注意是连字符，不是下划线
 CONFIG_PACKAGE_kmod-mt76-core=y
 
-# ---------- Wi-Fi 认证组件 ----------
+# Wi-Fi 认证组件（25.12 默认）
 CONFIG_PACKAGE_wpad-basic-mbedtls=y
 
-# ---------- USB ----------
+# ============================================================================
+# USB（C526A 硬件自带）
+# ============================================================================
 CONFIG_PACKAGE_kmod-usb3=y
 CONFIG_PACKAGE_kmod-usb2=y
 CONFIG_PACKAGE_kmod-usb-dwc3-qcom=y
 
-# ---------- LuCI + 中文 ----------
+# ============================================================================
+# LuCI 核心应用
+# ============================================================================
 CONFIG_PACKAGE_luci=y
 CONFIG_PACKAGE_luci-app-firewall=y
-CONFIG_PACKAGE_luci-app-package-manager=y   # ★ 替换 luci-app-opkg（25.12 使用 apk）
+CONFIG_PACKAGE_luci-app-package-manager=y   # 25.12 使用 apk，替代旧的 luci-app-opkg
 CONFIG_PACKAGE_luci-theme-bootstrap=y
 
-# 核心中文语言包
-CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
-# 防火墙页面翻译
-CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y
-# 软件包管理页面翻译
-CONFIG_PACKAGE_luci-i18n-package-manager-zh-cn=y
-
-# ---------- 网络基础 ----------
+# ============================================================================
+# 网络基础
+# ============================================================================
 CONFIG_PACKAGE_dnsmasq-full=y
 CONFIG_PACKAGE_ip-full=y
 CONFIG_PACKAGE_odhcp6c=y
 CONFIG_PACKAGE_odhcpd-ipv6only=y
 CONFIG_PACKAGE_ipv6helper=y
 
-# ---------- 常用工具 ----------
+# ============================================================================
+# 常用工具
+# ============================================================================
 CONFIG_PACKAGE_curl=y
 CONFIG_PACKAGE_wget-ssl=y
 CONFIG_PACKAGE_unzip=y
@@ -55,7 +82,9 @@ CONFIG_PACKAGE_htop=y
 CONFIG_PACKAGE_nano=y
 CONFIG_PACKAGE_ca-bundle=y
 
-# ---------- 调试与构建 ----------
+# ============================================================================
+# 调试与构建
+# ============================================================================
 CONFIG_KERNEL_KALLSYMS=y
 CONFIG_KERNEL_DEBUG_INFO=n
 CONFIG_KERNEL_DEBUG_INFO_BTF=n
@@ -63,9 +92,11 @@ CONFIG_CCACHE=y
 CONFIG_AUTOREMOVE=n
 CONFIG_DEBUG=n
 
-# ---------- 版本标识 ----------
+# ============================================================================
+# 版本标识
+# ============================================================================
 CONFIG_VERSIONOPT=y
 CONFIG_VERSION_DIST="OpenWrt-C526A"
-CONFIG_VERSION_NUMBER="25.12-ath10k-mt7615-wifi"
+CONFIG_VERSION_NUMBER="25.12-ipqess-ath10k-mt7615-wifi"
 CONFIG_VERSION_MANUFACTURER="HiWiFi"
 CONFIG_VERSION_PRODUCT="C526A"
