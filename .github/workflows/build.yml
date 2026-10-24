@@ -154,16 +154,17 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Fix uboot-envtools envtools (Exec format error)
+      - name: Fix uboot-tools envtools (Exec format error)
         run: |
           set -e
           cd openwrt
 
-          MK=$(find package feeds -path '*/uboot-envtools/Makefile' 2>/dev/null | head -n1)
+          # 搜索正确的 Makefile 路径
+          MK=$(find package/boot -path '*/uboot-tools/Makefile' 2>/dev/null | head -n1)
           if [ -z "$MK" ]; then
-            echo "!! 找不到 uboot-envtools/Makefile，打印目录结构供定位："
-            find . -maxdepth 4 -type d -name 'uboot*' 2>/dev/null || true
-            find . -maxdepth 4 -type f -name 'Makefile' -path '*uboot*' 2>/dev/null || true
+            echo "!! 找不到 uboot-tools/Makefile，打印目录结构供定位："
+            find package/boot -maxdepth 3 -type d -name 'uboot-tools*' 2>/dev/null || true
+            find package/boot -maxdepth 4 -type f -name 'Makefile' -path '*uboot*' 2>/dev/null || true
             exit 1
           fi
           echo "找到 Makefile：$MK"
@@ -174,43 +175,29 @@ jobs:
           MK = sys.argv[1]
           s = open(MK, encoding="utf-8").read()
 
-          # 1. Build/Configure -> tools-only_defconfig
-          if "tools-only_defconfig" not in s:
-              s = re.sub(
-                  r"(define Build/Configure\n)((?:.*\n)*?)(endef)",
-                  r"\1\t$(call Build/Compile/Default,tools-only_defconfig)\n\3",
-                  s, count=1
-              )
-
-          # 2. 强制 Build/Compile 使用 ARCH=sandbox 和 CROSS_COMPILE=""
-          new_build_compile = (
-              "define Build/Compile\n"
-              "\t+$(MAKE) $(PKG_JOBS) -C $(PKG_BUILD_DIR) \\\n"
-              "\t\tCROSS_COMPILE=\"\" \\\n"
-              "\t\tARCH=sandbox \\\n"
-              "\t\tenvtools\n"
-              "endef"
-          )
-
-          if "define Build/Compile" in s:
-              s = re.sub(
-                  r"define Build/Compile\n(?:.*\n)*?endef",
-                  new_build_compile,
-                  s
-              )
-          else:
-              s = s.replace(
-                  "include $(INCLUDE_DIR)/package.mk",
-                  "include $(INCLUDE_DIR)/package.mk\n\n" + new_build_compile
-              )
+          # 在 Build/Compile 中注入 ARCH="sandbox"
+          # 这是 U-Boot 上游推荐的修复方式
+          if "ARCH=\"sandbox\"" not in s:
+              # 如果存在 Build/Compile，则在其中插入 ARCH="sandbox"
+              if "define Build/Compile" in s:
+                  s = re.sub(
+                      r"(define Build/Compile\n)",
+                      r'\1\t+ARCH="sandbox" \\\n',
+                      s, count=1
+                  )
+              else:
+                  # 如果不存在，则创建
+                  s = s.replace(
+                      "include $(INCLUDE_DIR)/package.mk",
+                      "include $(INCLUDE_DIR)/package.mk\n\ndefine Build/Compile\n\t+$(MAKE) $(PKG_JOBS) -C $(PKG_BUILD_DIR) \\\n\t\tARCH=\"sandbox\" \\\n\t\tenvtools\nendef"
+                  )
 
           open(MK, "w", encoding="utf-8").write(s)
-          print("✅ uboot-envtools Makefile 已修复 (ARCH=sandbox)")
+          print("✅ uboot-tools Makefile 已修复 (ARCH=sandbox)")
           PY
 
-          grep -q "tools-only_defconfig" "$MK" || { echo "!! tools-only_defconfig 未写入"; exit 1; }
-          grep -q "ARCH=sandbox" "$MK" || { echo "!! ARCH=sandbox 未写入"; exit 1; }
-          echo "=== uboot-envtools 修复完成 ==="
+          grep -q 'ARCH="sandbox"' "$MK" || { echo "!! ARCH=sandbox 未写入"; exit 1; }
+          echo "=== uboot-tools 修复完成 ==="
 
       - name: Add uci-defaults (LAN IP + WiFi + mt7615 reboot fix)
         run: |
@@ -282,10 +269,11 @@ jobs:
           else
             echo "  [OK] DBDC 补丁文件已就位"
           fi
-          if ! grep -q "tools-only_defconfig" "$(find package feeds -path '*/uboot-envtools/Makefile' 2>/dev/null | head -n1)"; then
-            echo "  [MISS] uboot-envtools tools-only_defconfig 未修复"; FAIL=1
+          MK=$(find package/boot -path '*/uboot-tools/Makefile' 2>/dev/null | head -n1)
+          if [ -z "$MK" ] || ! grep -q 'ARCH="sandbox"' "$MK"; then
+            echo "  [MISS] uboot-tools ARCH=sandbox 未修复"; FAIL=1
           else
-            echo "  [OK] uboot-envtools 已修复"
+            echo "  [OK] uboot-tools 已修复"
           fi
           if [ "$FAIL" -ne 0 ]; then echo "!! 自检失败"; exit 1; fi
           echo "=== 全部自检通过 ==="
