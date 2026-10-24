@@ -47,7 +47,6 @@ jobs:
           set -e
           PATCH="$GITHUB_WORKSPACE/0001-Added-support-for-HIWIFI-c526a-25.12.patch"
           [ -f "$PATCH" ] || { echo "::error::找不到 patch 文件"; exit 1; }
-
           python3 - "$PATCH" <<'PY'
           import re, sys
           path = sys.argv[1]
@@ -127,18 +126,12 @@ jobs:
         run: |
           set -e
           cd openwrt
-
           PATCH_DIR="package/kernel/mt76/patches"
           mkdir -p "$PATCH_DIR"
-
-          # 直接写入补丁文件，放入 patches 目录即可自动生效
-          # OpenWrt 的 mt76 包会自动扫描 patches/ 下所有 *.patch 并按文件名排序应用
           cat > "$PATCH_DIR/999-mt7615-dbdc-band-cap.patch" <<'EOF'
           --- a/mt7615/eeprom.c
           +++ b/mt7615/eeprom.c
-          @@ -128,12 +128,12 @@ mt7615_eeprom_parse_hw_band_cap(struct mt7615_dev *dev)
-           	case MT_EE_5GHZ:
-           		dev->mphy.cap.has_5ghz = true;
+          @@ -128,9 +128,7 @@ mt7615_eeprom_parse_hw_band_cap(struct mt7615_dev *dev)
            		break;
           -	case MT_EE_2GHZ:
           -		dev->mphy.cap.has_2ghz = true;
@@ -149,17 +142,44 @@ jobs:
           +	case MT_EE_2GHZ:
           +		dev->mphy.cap.has_2ghz = true;
           +		break;
-           	default:
-           		dev->mphy.cap.has_2ghz = true;
-           		dev->mphy.cap.has_5ghz = true;
           EOF
-
           echo "✅ DBDC 补丁已写入：$PATCH_DIR/999-mt7615-dbdc-band-cap.patch"
-
-          # 简单校验文件已存在且非空
           [ -s "$PATCH_DIR/999-mt7615-dbdc-band-cap.patch" ] \
             || { echo "!! 补丁文件写入失败"; exit 1; }
           echo "=== DBDC 补丁注入完成 ==="
+
+      - name: Fix uboot-envtools envtools (Exec format error)
+        run: |
+          set -e
+          cd openwrt
+          python3 - <<'PY'
+          import re
+          MK = "package/boot/uboot-envtools/Makefile"
+          s = open(MK, encoding="utf-8").read()
+          if "tools-only_defconfig" not in s:
+              s = re.sub(
+                  r"(define Build/Configure\n)((?:.*\n)*?)(endef)",
+                  r"\1\t$(call Build/Compile/Default,tools-only_defconfig)\n\3",
+                  s, count=1
+              )
+          if "ARCH=sandbox" not in s:
+              if "define Build/Compile" in s:
+                  s = re.sub(
+                      r"(define Build/Compile\n)((?:.*\n)*?)(endef)",
+                      r"\1\t$(call Build/Compile/Default, ARCH=sandbox envtools)\n\3",
+                      s, count=1
+                  )
+              else:
+                  s = s.replace(
+                      "include $(INCLUDE_DIR)/package.mk",
+                      "include $(INCLUDE_DIR)/package.mk\n\ndefine Build/Compile\n\t$(call Build/Compile/Default, ARCH=sandbox envtools)\nendef"
+                  )
+          open(MK, "w", encoding="utf-8").write(s)
+          print("✅ uboot-envtools Makefile 已修复")
+          PY
+          grep -q "tools-only_defconfig" package/boot/uboot-envtools/Makefile || { echo "!! tools-only_defconfig 未写入"; exit 1; }
+          grep -q "ARCH=sandbox" package/boot/uboot-envtools/Makefile || { echo "!! ARCH=sandbox 未写入"; exit 1; }
+          echo "=== uboot-envtools 修复完成 ==="
 
       - name: Update feeds
         run: |
@@ -184,23 +204,16 @@ jobs:
           exit 0
           EOF
           chmod +x files/etc/uci-defaults/99-c526a-network
-
-          # ★ 植入软重启 workaround：关机时 rmmod mt7615e
           mkdir -p files/etc/init.d files/etc/rc.d
           cat > files/etc/init.d/mt7615_reboot <<'EOF'
           #!/bin/sh /etc/rc.common
-
           STOP=52
-
           stop() {
               rmmod mt7615e 2>/dev/null
           }
           EOF
           chmod +x files/etc/init.d/mt7615_reboot
-
-          # ★ 创建 K52 链接，使其在关机流程中执行
           ln -sf ../init.d/mt7615_reboot files/etc/rc.d/K52mt7615_reboot
-
           echo "=== uci-defaults & mt7615_reboot 脚本 ==="
           ls -la files/etc/uci-defaults/ files/etc/init.d/mt7615_reboot files/etc/rc.d/K52mt7615_reboot
 
@@ -242,6 +255,11 @@ jobs:
             echo "  [MISS] DBDC 补丁文件缺失或为空"; FAIL=1
           else
             echo "  [OK] DBDC 补丁文件已就位"
+          fi
+          if ! grep -q "tools-only_defconfig" package/boot/uboot-envtools/Makefile; then
+            echo "  [MISS] uboot-envtools tools-only_defconfig 未修复"; FAIL=1
+          else
+            echo "  [OK] uboot-envtools 已修复"
           fi
           if [ "$FAIL" -ne 0 ]; then echo "!! 自检失败"; exit 1; fi
           echo "=== 全部自检通过 ==="
