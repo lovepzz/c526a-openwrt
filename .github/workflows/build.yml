@@ -1,4 +1,4 @@
-name: 修复软重启问题2.4g
+name: Build C526A (OpenWrt 25.12 + ipqess + ath10k + mt7615)
 
 on:
   workflow_dispatch:
@@ -131,7 +131,8 @@ jobs:
           PATCH_DIR="package/kernel/mt76/patches"
           mkdir -p "$PATCH_DIR"
 
-          # 1. 写入 DBDC 补丁内容（来自上游 commit 421033de）
+          # 直接写入补丁文件，放入 patches 目录即可自动生效
+          # OpenWrt 的 mt76 包会自动扫描 patches/ 下所有 *.patch 并按文件名排序应用
           cat > "$PATCH_DIR/999-mt7615-dbdc-band-cap.patch" <<'EOF'
           --- a/mt7615/eeprom.c
           +++ b/mt7615/eeprom.c
@@ -152,22 +153,12 @@ jobs:
            		dev->mphy.cap.has_2ghz = true;
            		dev->mphy.cap.has_5ghz = true;
           EOF
-          echo "✅ 补丁文件已写入：$PATCH_DIR/999-mt7615-dbdc-band-cap.patch"
 
-          # 2. 在 mt76 的 Makefile 中注册该补丁
-          MK="package/kernel/mt76/Makefile"
-          if ! grep -q "999-mt7615-dbdc-band-cap.patch" "$MK"; then
-            sed -i "/^PKG_VERSION:=/a Patch999: 999-mt7615-dbdc-band-cap.patch" "$MK"
-            echo "✅ 已在 Makefile 中注册 DBDC 补丁"
-          else
-            echo "补丁条目已存在，跳过"
-          fi
+          echo "✅ DBDC 补丁已写入：$PATCH_DIR/999-mt7615-dbdc-band-cap.patch"
 
-          # 3. 验证注册成功
-          grep -n "999-mt7615-dbdc-band-cap.patch" "$MK" || {
-            echo "!! 补丁条目未写入 Makefile"
-            exit 1
-          }
+          # 简单校验文件已存在且非空
+          [ -s "$PATCH_DIR/999-mt7615-dbdc-band-cap.patch" ] \
+            || { echo "!! 补丁文件写入失败"; exit 1; }
           echo "=== DBDC 补丁注入完成 ==="
 
       - name: Update feeds
@@ -247,13 +238,8 @@ jobs:
             if grep -qx "${opt}=y" .config; then echo "  [OK] ${opt}=y"
             else echo "  [MISS] ${opt}"; FAIL=1; fi
           done
-          if ! grep -q '999-mt7615-dbdc-band-cap.patch' package/kernel/mt76/Makefile; then
-            echo "  [MISS] DBDC 补丁未注册到 Makefile"; FAIL=1
-          else
-            echo "  [OK] DBDC 补丁已注册"
-          fi
-          if [ ! -f package/kernel/mt76/patches/999-mt7615-dbdc-band-cap.patch ]; then
-            echo "  [MISS] DBDC 补丁文件缺失"; FAIL=1
+          if [ ! -s package/kernel/mt76/patches/999-mt7615-dbdc-band-cap.patch ]; then
+            echo "  [MISS] DBDC 补丁文件缺失或为空"; FAIL=1
           else
             echo "  [OK] DBDC 补丁文件已就位"
           fi
