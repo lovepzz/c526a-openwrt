@@ -1,4 +1,4 @@
-name: Build C526A (OpenWrt 25.12 + ipqess + ath10k + mt7615)
+name: 构建极路由X-修复2.4gwifi偏移问题与中文语言包添加
 
 on:
   workflow_dispatch:
