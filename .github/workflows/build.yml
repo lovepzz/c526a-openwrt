@@ -122,6 +122,23 @@ jobs:
           grep -q 'hiwifi_c526a' target/linux/ipq40xx/image/generic.mk \
             || { echo "!! generic.mk 缺失设备定义"; exit 1; }
 
+      - name: Copy mt76 DBDC patch into tree
+        run: |
+          set -e
+          cd openwrt
+          SRC="$GITHUB_WORKSPACE/999-mt7615-dbdc-band-cap.patch"
+          DST_DIR="package/kernel/mt76/patches"
+          DST="$DST_DIR/999-mt7615-dbdc-band-cap.patch"
+
+          [ -f "$SRC" ] || { echo "::error::仓库根目录缺少 999-mt7615-dbdc-band-cap.patch"; exit 1; }
+          [ -s "$SRC" ] || { echo "::error::补丁文件为空"; exit 1; }
+
+          mkdir -p "$DST_DIR"
+          cp "$SRC" "$DST"
+
+          echo "=== 补丁已复制到 $DST ==="
+          head -20 "$DST"
+
       - name: Update feeds
         run: |
           cd openwrt
@@ -202,6 +219,11 @@ jobs:
             if grep -qx "${opt}=y" .config; then echo "  [OK] ${opt}=y"
             else echo "  [MISS] ${opt}"; FAIL=1; fi
           done
+          if [ ! -s package/kernel/mt76/patches/999-mt7615-dbdc-band-cap.patch ]; then
+            echo "  [MISS] DBDC 补丁文件缺失或为空"; FAIL=1
+          else
+            echo "  [OK] DBDC 补丁文件已就位"
+          fi
           if [ "$FAIL" -ne 0 ]; then echo "!! 自检失败"; exit 1; fi
           echo "=== 全部自检通过 ==="
 
@@ -209,6 +231,24 @@ jobs:
         run: |
           cd openwrt
           make -j$(nproc) download
+
+      - name: Pre-check mt76 DBDC patch
+        run: |
+          set -e
+          cd openwrt
+          MT76_DIR=$(find build_dir -maxdepth 4 -type d -name 'mt76-*' | head -n1)
+          if [ -z "$MT76_DIR" ]; then
+            echo "!! 找不到 mt76 源码，跳过预检（不影响正式构建）"
+            exit 0
+          fi
+          echo "mt76 源码目录：$MT76_DIR"
+          cd "$MT76_DIR"
+          if patch -p1 --dry-run < "$GITHUB_WORKSPACE/999-mt7615-dbdc-band-cap.patch"; then
+            echo "✅ 补丁预检通过"
+          else
+            echo "::warning::补丁预检失败，正式构建时也会失败。请按流程重新生成补丁。"
+            exit 1
+          fi
 
       - name: Build
         run: |
@@ -221,7 +261,7 @@ jobs:
         run: |
           cd openwrt
           tail -120 build.log || true
-          grep -n -i -E "error|failed to build" build.log | tail -60 || true
+          grep -n -i -E "error|failed to build|Hunk #.*FAILED" build.log | tail -60 || true
 
       - name: Assert firmware produced
         if: always()
