@@ -1,6 +1,6 @@
 # ============================================================================
 # OpenWrt 25.12 — HiWiFi C526A (极路由X)
-# 正常路由模式 · 启用 Wi-Fi · 官方 ath10k（非 CT）
+# 正常路由模式 · 启用 Wi-Fi · 官方 ath10k + MT7615 双频
 # ============================================================================
 
 # ---------- Target ----------
@@ -8,16 +8,18 @@ CONFIG_TARGET_ipq40xx=y
 CONFIG_TARGET_ipq40xx_generic=y
 CONFIG_TARGET_ipq40xx_generic_DEVICE_hiwifi_c526a=y
 
-
-
-
-# ---------- 官方 ath10k（非 CT）----------
+# ---------- 官方 ath10k（5G）----------
 CONFIG_PACKAGE_kmod-ath10k=y
 CONFIG_PACKAGE_ath10k-firmware-qca4019=y
-CONFIG_PACKAGE_wpad-basic-mbedtls=y
+
+# ---------- MT7615（2.4G，PCIe）----------
 CONFIG_PACKAGE_kmod-mt7615e=y
-CONFIG_PACKAGE_kmod_mt76_connac=y
+CONFIG_PACKAGE_kmod-mt7615-firmware=y        # ★ 新增，MT7615 必需固件
+CONFIG_PACKAGE_kmod-mt76-connac=y            # ★ 修正：下划线 → 连字符
 CONFIG_PACKAGE_kmod-mt76-core=y
+
+# ---------- Wi-Fi 认证组件 ----------
+CONFIG_PACKAGE_wpad-basic-mbedtls=y
 
 # ---------- USB ----------
 CONFIG_PACKAGE_kmod-usb3=y
@@ -27,10 +29,15 @@ CONFIG_PACKAGE_kmod-usb-dwc3-qcom=y
 # ---------- LuCI + 中文 ----------
 CONFIG_PACKAGE_luci=y
 CONFIG_PACKAGE_luci-app-firewall=y
-CONFIG_PACKAGE_luci-app-opkg=y
+CONFIG_PACKAGE_luci-app-package-manager=y   # ★ 替换 luci-app-opkg（25.12 使用 apk）
 CONFIG_PACKAGE_luci-theme-bootstrap=y
+
+# 核心中文语言包
 CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+# 防火墙页面翻译
 CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y
+# 软件包管理页面翻译
+CONFIG_PACKAGE_luci-i18n-package-manager-zh-cn=y
 
 # ---------- 网络基础 ----------
 CONFIG_PACKAGE_dnsmasq-full=y
@@ -59,6 +66,6 @@ CONFIG_DEBUG=n
 # ---------- 版本标识 ----------
 CONFIG_VERSIONOPT=y
 CONFIG_VERSION_DIST="OpenWrt-C526A"
-CONFIG_VERSION_NUMBER="25.12-ath10k-wifi"
+CONFIG_VERSION_NUMBER="25.12-ath10k-mt7615-wifi"
 CONFIG_VERSION_MANUFACTURER="HiWiFi"
 CONFIG_VERSION_PRODUCT="C526A"
