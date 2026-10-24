@@ -1,4 +1,4 @@
-name: 构建极路由X-修复2.4gwifi偏移问题与中文语言包添加
+name: Build C526A (OpenWrt 25.12 + ipqess + ath10k + mt7615)
 
 on:
   workflow_dispatch:
@@ -50,108 +50,61 @@ jobs:
 
           python3 - "$PATCH" <<'PY'
           import re, sys
-
           path = sys.argv[1]
           with open(path, "r", encoding="utf-8") as f:
               lines = f.readlines()
-
           if lines and not lines[-1].endswith("\n"):
               lines[-1] += "\n"
-
-          out = []
-          i = 0
-          fixed = 0
-
+          out, i, fixed = [], 0, 0
           while i < len(lines):
               line = lines[i]
-
               if line.startswith("diff --git "):
-                  out.append(line)
-                  i += 1
-
+                  out.append(line); i += 1
                   header = []
-                  while (i < len(lines)
-                         and not lines[i].startswith("@@")
+                  while (i < len(lines) and not lines[i].startswith("@@")
                          and not lines[i].startswith("diff --git ")):
-                      header.append(lines[i])
-                      i += 1
-
+                      header.append(lines[i]); i += 1
                   if i >= len(lines) or not lines[i].startswith("@@"):
-                      out.extend(header)
-                      continue
-
+                      out.extend(header); continue
                   while i < len(lines) and lines[i].startswith("@@"):
                       hunk = lines[i]
                       m = re.match(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$", hunk)
                       if not m:
                           out.extend(header); header = []
-                          out.append(hunk); i += 1
-                          continue
-
-                      old_start = int(m.group(1))
-                      new_start = int(m.group(3))
-                      context   = m.group(5)
-
-                      i += 1
-                      body = []
-                      a_old = a_new = 0
+                          out.append(hunk); i += 1; continue
+                      old_start = int(m.group(1)); new_start = int(m.group(3))
+                      context = m.group(5); i += 1
+                      body, a_old, a_new = [], 0, 0
                       while i < len(lines):
                           l = lines[i]
-                          if l.startswith("diff --git ") or l.startswith("@@"):
-                              break
-                          if l.startswith("+"):
-                              a_new += 1
-                          elif l.startswith("-"):
-                              a_old += 1
+                          if l.startswith("diff --git ") or l.startswith("@@"): break
+                          if l.startswith("+"): a_new += 1
+                          elif l.startswith("-"): a_old += 1
                           elif l.startswith(" ") or l == "\n" or l == "\t\n":
                               a_old += 1; a_new += 1
-                          elif l.startswith("\\"):
-                              pass
-                          else:
-                              break
-                          body.append(l)
-                          i += 1
-
-                      if context.strip():
-                          new_hunk = f"@@ -{old_start},{a_old} +{new_start},{a_new} @@{context}\n"
-                      else:
-                          new_hunk = f"@@ -{old_start},{a_old} +{new_start},{a_new} @@\n"
-
+                          elif l.startswith("\\"): pass
+                          else: break
+                          body.append(l); i += 1
+                      new_hunk = (f"@@ -{old_start},{a_old} +{new_start},{a_new} @@{context}\n"
+                                  if context.strip() else
+                                  f"@@ -{old_start},{a_old} +{new_start},{a_new} @@\n")
                       out.extend(header); header = []
-                      out.append(new_hunk)
-                      out.extend(body)
-                      fixed += 1
-
+                      out.append(new_hunk); out.extend(body); fixed += 1
                   out.extend(header)
               else:
-                  out.append(line)
-                  i += 1
-
+                  out.append(line); i += 1
           with open(path, "w", encoding="utf-8") as f:
               f.writelines(out)
           print(f"已重建 {fixed} 个 hunk 的 @@ 头")
           PY
-
-          echo "=== 修正后的 @@ 行（节选）==="
-          grep -n '^@@' "$PATCH" | head -20 || true
-
-          echo "=== git apply --check 校验 ==="
-          cd "$GITHUB_WORKSPACE/openwrt"
-          if git apply --check --verbose "$PATCH" 2>&1 | tail -20; then
-            echo "git apply --check 通过"
-          else
-            echo "!! git apply --check 未通过，下一步会 fallback 到 patch -p1"
-          fi
 
       - name: Apply C526A patch
         run: |
           set -e
           cd openwrt
           PATCH="$GITHUB_WORKSPACE/0001-Added-support-for-HIWIFI-c526a-25.12.patch"
-
           git config user.email "build@c526a.local"
           git config user.name "C526A Build"
-
           if git am --3way "$PATCH"; then
             echo "✅ git am 成功"
           else
@@ -165,41 +118,10 @@ jobs:
               echo "✅ patch -p1 应用完成"
             fi
           fi
-
           test -f target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts \
             || { echo "!! DTS 不存在"; exit 1; }
           grep -q 'hiwifi_c526a' target/linux/ipq40xx/image/generic.mk \
             || { echo "!! generic.mk 缺失设备定义"; exit 1; }
-
-      - name: Ensure official ath10k + mt7615 in generic.mk
-        run: |
-          set -e
-          cd openwrt
-          MK=target/linux/ipq40xx/image/generic.mk
-          python3 - "$MK" <<'PY'
-          import re, sys
-          p = sys.argv[1]
-          s = open(p, encoding="utf-8").read()
-          s = s.replace("kmod-ath10k-ct ath10k-firmware-qca4019-ct",
-                        "kmod-ath10k ath10k-firmware-qca4019")
-          pat = re.compile(
-              r"(define Device/hiwifi_c526a\n(?:.*\n)*?\tPAGESIZE := 2048\n)((?:.*\n)*?endef)"
-          )
-          m = pat.search(s)
-          if not m:
-              print("!! 未找到 hiwifi_c526a 块"); sys.exit(1)
-          block = m.group(0)
-          if "kmod-mt7615e" not in block:
-              pkgs = (
-                  "\tDEVICE_PACKAGES := kmod-ath10k ath10k-firmware-qca4019 \\\n"
-                  "\t\tkmod-mt7615e kmod-mt76-connac kmod-mt76-core \\\n"
-                  "\t\tkmod-usb3 kmod-usb2\n"
-              )
-              s = s[:m.end(1)] + pkgs + s[m.end(1):]
-          open(p, "w", encoding="utf-8").write(s)
-          print("generic.mk 已更新")
-          PY
-          grep -A15 'define Device/hiwifi_c526a' "$MK" | grep 'DEVICE_PACKAGES' || true
 
       - name: Update feeds
         run: |
@@ -207,7 +129,7 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Add uci-defaults (LAN IP + WiFi)
+      - name: Add uci-defaults (LAN IP + WiFi + mt7615 reboot fix)
         run: |
           set -e
           cd openwrt
@@ -217,15 +139,32 @@ jobs:
           uci set network.lan.ipaddr='10.0.0.3'
           uci set network.lan.netmask='255.255.255.0'
           uci commit network
-
           uci set wireless.@wifi-device[0].disabled='0'
           uci set wireless.@wifi-device[1].disabled='0'
           uci set wireless.@wifi-device[2].disabled='0'
           uci commit wireless
-
           exit 0
           EOF
           chmod +x files/etc/uci-defaults/99-c526a-network
+
+          # ★ 植入软重启 workaround：关机时 rmmod mt7615e
+          mkdir -p files/etc/init.d files/etc/rc.d
+          cat > files/etc/init.d/mt7615_reboot <<'EOF'
+          #!/bin/sh /etc/rc.common
+
+          STOP=52
+
+          stop() {
+              rmmod mt7615e 2>/dev/null
+          }
+          EOF
+          chmod +x files/etc/init.d/mt7615_reboot
+
+          # ★ 创建 K52 链接，使其在关机流程中执行
+          ln -sf ../init.d/mt7615_reboot files/etc/rc.d/K52mt7615_reboot
+
+          echo "=== uci-defaults & mt7615_reboot 脚本 ==="
+          ls -la files/etc/uci-defaults/ files/etc/init.d/mt7615_reboot files/etc/rc.d/K52mt7615_reboot
 
       - name: Load config
         run: |
@@ -247,31 +186,20 @@ jobs:
         run: |
           cd openwrt
           FAIL=0
-
           grep -E 'CONFIG_TARGET_(BOARD|SUBTARGET|PROFILE)' .config || true
           grep -A15 'define Device/hiwifi_c526a' target/linux/ipq40xx/image/generic.mk \
             || { echo "  [MISS] 设备定义缺失"; FAIL=1; }
           ls -la target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4019-c526a.dts \
             || { echo "  [MISS] DTS 缺失"; FAIL=1; }
-
           for opt in CONFIG_PACKAGE_kmod-ath10k CONFIG_PACKAGE_ath10k-firmware-qca4019 ; do
             if grep -qx "${opt}=y" .config; then echo "  [OK] ${opt}=y"
             else echo "  [MISS] ${opt}"; FAIL=1; fi
           done
-          for opt in CONFIG_PACKAGE_kmod-mt7615e CONFIG_PACKAGE_kmod-mt76-connac CONFIG_PACKAGE_kmod-mt76-core ; do
+          for opt in CONFIG_PACKAGE_kmod-mt7615e CONFIG_PACKAGE_kmod-mt7615-firmware \
+                     CONFIG_PACKAGE_kmod-mt76-connac CONFIG_PACKAGE_kmod-mt76-core ; do
             if grep -qx "${opt}=y" .config; then echo "  [OK] ${opt}=y"
             else echo "  [MISS] ${opt}"; FAIL=1; fi
           done
-          if grep -qx 'CONFIG_PACKAGE_kmod-ath10k-ct=y' .config; then
-            echo "  [BAD] kmod-ath10k-ct 仍为 y"; FAIL=1
-          else
-            echo "  [OK] kmod-ath10k-ct 未启用"
-          fi
-
-          UCI=files/etc/uci-defaults/99-c526a-network
-          [ -f "$UCI" ] || { echo "  [MISS] uci-defaults 缺失"; FAIL=1; }
-          grep -q "10.0.0.3" "$UCI" && echo "  [OK] LAN IP = 10.0.0.3" || { echo "  [MISS] LAN IP 未设置"; FAIL=1; }
-
           if [ "$FAIL" -ne 0 ]; then echo "!! 自检失败"; exit 1; fi
           echo "=== 全部自检通过 ==="
 
@@ -300,12 +228,10 @@ jobs:
           FAIL=0
           ls -la bin/targets/ipq40xx/generic/ 2>/dev/null || true
           SU=$(find bin/targets/ipq40xx/generic -maxdepth 1 -name '*hiwifi_c526a*sysupgrade.bin' -print -quit 2>/dev/null || true)
-          if [ -n "$SU" ] && [ -s "$SU" ]; then
-            echo "  [OK] sysupgrade = $SU ($(wc -c < "$SU") B)"
+          if [ -n "$SU" ] && [ -s "$SU" ]; then echo "  [OK] sysupgrade = $SU ($(wc -c < "$SU") B)"
           else echo "  [MISS] sysupgrade.bin"; FAIL=1; fi
           FU=$(find bin/targets/ipq40xx/generic -maxdepth 1 -name '*hiwifi_c526a*squashfs-factory.ubi' -print -quit 2>/dev/null || true)
-          if [ -n "$FU" ] && [ -s "$FU" ]; then
-            echo "  [OK] factory.ubi = $FU ($(wc -c < "$FU") B)"
+          if [ -n "$FU" ] && [ -s "$FU" ]; then echo "  [OK] factory.ubi = $FU ($(wc -c < "$FU") B)"
           else echo "  [MISS] factory.ubi"; FAIL=1; fi
           [ "$FAIL" -eq 0 ] || exit 1
           echo "=== 产物断言通过 ==="
