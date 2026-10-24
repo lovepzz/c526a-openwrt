@@ -122,37 +122,6 @@ jobs:
           grep -q 'hiwifi_c526a' target/linux/ipq40xx/image/generic.mk \
             || { echo "!! generic.mk 缺失设备定义"; exit 1; }
 
-      - name: Apply mt76 DBDC patch
-        run: |
-          set -e
-          cd openwrt
-          PATCH_DIR="package/kernel/mt76/patches"
-          mkdir -p "$PATCH_DIR"
-          cat > "$PATCH_DIR/999-mt7615-dbdc-band-cap.patch" <<'EOF'
-          --- a/mt7615/eeprom.c
-          +++ b/mt7615/eeprom.c
-          @@ -128,12 +128,12 @@ mt7615_eeprom_parse_hw_band_cap(struct mt7615_dev *dev)
-           	case MT_EE_5GHZ:
-           		dev->mphy.cap.has_5ghz = true;
-           		break;
-          -	case MT_EE_2GHZ:
-          -		dev->mphy.cap.has_2ghz = true;
-          -		break;
-           	case MT_EE_DBDC:
-           		dev->dbdc_support = true;
-           		fallthrough;
-          +	case MT_EE_2GHZ:
-          +		dev->mphy.cap.has_2ghz = true;
-          +		break;
-           	default:
-           		dev->mphy.cap.has_2ghz = true;
-           		dev->mphy.cap.has_5ghz = true;
-          EOF
-          echo "✅ DBDC 补丁已写入：$PATCH_DIR/999-mt7615-dbdc-band-cap.patch"
-          [ -s "$PATCH_DIR/999-mt7615-dbdc-band-cap.patch" ] \
-            || { echo "!! 补丁文件写入失败"; exit 1; }
-          echo "=== DBDC 补丁注入完成 ==="
-
       - name: Update feeds
         run: |
           cd openwrt
@@ -233,11 +202,6 @@ jobs:
             if grep -qx "${opt}=y" .config; then echo "  [OK] ${opt}=y"
             else echo "  [MISS] ${opt}"; FAIL=1; fi
           done
-          if [ ! -s package/kernel/mt76/patches/999-mt7615-dbdc-band-cap.patch ]; then
-            echo "  [MISS] DBDC 补丁文件缺失或为空"; FAIL=1
-          else
-            echo "  [OK] DBDC 补丁文件已就位"
-          fi
           if [ "$FAIL" -ne 0 ]; then echo "!! 自检失败"; exit 1; fi
           echo "=== 全部自检通过 ==="
 
